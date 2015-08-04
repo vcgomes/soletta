@@ -1,0 +1,70 @@
+{
+  "$schema": "http://solettaproject.github.io/soletta/schemas/node-type-genspec.schema",
+  "name": "bluez",
+  "meta": {
+    "author": "Intel Corporation",
+    "license": "BSD 3-Clause",
+    "version": "1"
+  },
+  "types": [
+    {
+      "category": "input/hw",
+      "description": "Retrieves live measurements from an already paired Parrot Flower Power.",
+      "methods": {
+        "close": "flower_power_sensor_close",
+        "open": "flower_power_sensor_open"
+      },
+      "name": "bluez/flower-power-sensor",
+      "out_ports": [
+        {
+          "data_type": "int",
+          "description": "FIXME",
+          "name": "LIGHT_SENSOR"
+        },
+        {
+          "data_type": "int",
+          "description": "FIXME",
+          "name": "SOIL_EC"
+        },
+        {
+          "data_type": "int",
+          "description": "FIXME",
+          "name": "SOIL_TEMP"
+        },
+        {
+          "data_type": "int",
+          "description": "FIXME",
+          "name": "AIR_TEMP"
+        },
+        {
+          "data_type": "int",
+          "description": "FIXME",
+          "name": "SOIL_VWC"
+        }
+      ],
+      "private_data_type": "sensor_data",
+      "url": "http://solettaproject.org/doc/latest/node_types/bluez/flower-power-sensor.html"
+    },
+    {
+      "category": "output/hw",
+      "description": "Controls the Flower Power LED",
+      "methods": {
+        "close": "flower_power_led_close",
+        "open": "flower_power_led_open"
+      },
+      "name": "bluez/flower-power-led",
+      "in_ports": [
+        {
+          "data_type": "any",
+          "description": "FIXME",
+          "name": "IN",
+          "methods": {
+            "process": "flower_power_led_in_process"
+          }
+        }
+      ],
+      "private_data_type": "led_data",
+      "url": "http://solettaproject.org/doc/latest/node_types/bluez/flower-power-led.html"
+    }
+  ]
+}

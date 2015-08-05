@@ -79,11 +79,6 @@ bluez_match_device_by_address(const char* address,
     static unsigned int id;
     struct match *m;
 
-    if (!system_bus) {
-        system_bus = sol_bus_get(NULL);
-        SOL_NULL_CHECK(system_bus, 0);
-    }
-
     if (find_match(address))
         return 0;
 

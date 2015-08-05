@@ -53,13 +53,22 @@ static sol_vector matches = SOL_VECTOR_INIT(struct match);
 
 static sd_bus *system_bus;
 
+static sd_bus *get_bus(void)
+{
+	if (system_bus)
+		return system_bus;
+
+	return system_bus = sol_bus_get(NULL);
+}
+
 static void match_free(struct match *m)
 {
     free(m->address);
 }
 
 static bool
-find_match(const char *address) {
+find_match(const char *address)
+{
     struct match *m;
     unsigned int i;
 
@@ -96,7 +105,7 @@ bluez_match_device_by_address(const char* address,
     if (matches.len > 1)
         return m->id;
 
-    return 0;
+    return m->id;
 
 error:
     sol_vector_del(&matches, matches.len - 1);

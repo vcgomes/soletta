@@ -15,6 +15,16 @@
         "open": "flower_power_sensor_open"
       },
       "name": "bluez/flower-power-sensor",
+      "options": {
+        "members": [
+          {
+            "name": "address",
+            "data_type": "string",
+            "description": "Bluetooth Address"
+          }
+        ],
+        "version": 1
+      },
       "out_ports": [
         {
           "data_type": "int",
@@ -53,6 +63,16 @@
         "open": "flower_power_led_open"
       },
       "name": "bluez/flower-power-led",
+      "options": {
+        "members": [
+          {
+            "name": "address",
+            "data_type": "string",
+            "description": "Bluetooth Address"
+          }
+        ],
+        "version": 1
+      },
       "in_ports": [
         {
           "data_type": "any",

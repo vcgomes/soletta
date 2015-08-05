@@ -30,74 +30,93 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "bluez-gen.h"
-
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#include <systemd/sd-bus.h>
-
-#include "sol-bus.h"
 #include "sol-flow.h"
 #include "sol-mainloop.h"
 #include "sol-types.h"
 #include "sol-util.h"
+#include "sol-vector.h"
 
-struct sensor_data {
-    char *remote;
+struct match {
+    unsigned int id;
+    char *address;
+    void (*cb)(const char *path, void *user_data);
+    void *user_data;
 };
 
-struct led_data {
-    char *remote;
-};
+static sol_vector matches = SOL_VECTOR_INIT(struct match);
 
-static sd_bus *bus;
+static sd_bus *system_bus;
 
-static int
-flower_power_sensor_open(struct sol_flow_node *node, void *data,
-    const struct sol_flow_node_options *options)
+static void match_free(struct match *m)
 {
-	return -ENOSYS;
+    free(m->address);
 }
 
-static void
-flower_power_sensor_close(struct sol_flow_node *node, void *data)
-{
+static bool
+find_match(const char *address) {
+    struct match *m;
+    unsigned int i;
 
+    SOL_VECTOR_FOREACH_IDX(&matches, m, i) {
+        if (streq(m->address, address))
+            return true;
+    }
+
+    return false;
 }
 
-static int
-flower_power_led_in_process(struct sol_flow_node *node,
-    void *data,
-    uint16_t port,
-    uint16_t conn_id,
-    const struct sol_flow_packet *packet)
+int
+bluez_match_device_by_address(const char* address,
+    void (*cb)(const char *path, void *user_data),
+    void *user_data)
 {
-	return -ENOSYS;
+    static unsigned int id;
+    struct match *m;
+
+    if (!system_bus) {
+        system_bus = sol_bus_get(NULL);
+        SOL_NULL_CHECK(system_bus, 0);
+    }
+
+    if (find_match(address))
+        return 0;
+
+    m = sol_vector_append(&matches);
+    SOL_NULL_CHECK(m, 0);
+
+    m->address = strdup(address);
+    SOL_NULL_CHECK_GOTO(m->address, error);
+
+    m->cb = cb;
+    m->user_data = user_data;
+    m->id = ++id;
+
+    /* The watches were already added */
+    if (matches.len > 1)
+        return m->id;
+
+    return 0;
+
+error:
+    sol_vector_del(&matches, matches.len - 1);
+    return 0;
 }
 
-static int
-flower_power_led_open(struct sol_flow_node *node, void *data,
-    const struct sol_flow_node_options *options)
+void bluez_remove_watch(unsigned int id)
 {
-    struct sensor_data *s = data;
-    struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
-        (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
+    struct match *m;
+    unsigned int i;
 
-    s->remote = strdup(opts->address);
-
-
-
-	return -ENOSYS;
+    SOL_VECTOR_FOREACH_REVERSE_IDX(&matches, m, i) {
+        if (m->id == id) {
+            match_free(m);
+            sol_vector_del(&matches, id);
+        }
+    }
 }
-
-static void
-flower_power_led_close(struct sol_flow_node *node, void *data)
-{
-
-}
-
-#include "bluez-gen.c"

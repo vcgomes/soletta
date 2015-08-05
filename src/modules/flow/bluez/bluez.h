@@ -30,74 +30,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "bluez-gen.h"
+int bluez_device_add_watch_by_address(const char* address,
+    void (*cb)(const char *path, void *user_data),
+    void *user_data);
 
-#include <errno.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/stat.h>
-
-#include <systemd/sd-bus.h>
-
-#include "sol-bus.h"
-#include "sol-flow.h"
-#include "sol-mainloop.h"
-#include "sol-types.h"
-#include "sol-util.h"
-
-struct sensor_data {
-    char *remote;
-};
-
-struct led_data {
-    char *remote;
-};
-
-static sd_bus *bus;
-
-static int
-flower_power_sensor_open(struct sol_flow_node *node, void *data,
-    const struct sol_flow_node_options *options)
-{
-	return -ENOSYS;
-}
-
-static void
-flower_power_sensor_close(struct sol_flow_node *node, void *data)
-{
-
-}
-
-static int
-flower_power_led_in_process(struct sol_flow_node *node,
-    void *data,
-    uint16_t port,
-    uint16_t conn_id,
-    const struct sol_flow_packet *packet)
-{
-	return -ENOSYS;
-}
-
-static int
-flower_power_led_open(struct sol_flow_node *node, void *data,
-    const struct sol_flow_node_options *options)
-{
-    struct sensor_data *s = data;
-    struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
-        (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
-
-    s->remote = strdup(opts->address);
-
-
-
-	return -ENOSYS;
-}
-
-static void
-flower_power_led_close(struct sol_flow_node *node, void *data)
-{
-
-}
-
-#include "bluez-gen.c"
+int bluez_remove_match(unsigned int id);

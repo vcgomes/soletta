@@ -54,8 +54,6 @@ struct led_data {
     char *remote;
 };
 
-static sd_bus *bus;
-
 static int
 flower_power_sensor_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)

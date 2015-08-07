@@ -36,11 +36,17 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
+#include <systemd/sd-bus.h>
+
+#include "sol-bus.h"
 #include "sol-flow.h"
+#include "sol-log.h"
 #include "sol-mainloop.h"
 #include "sol-types.h"
 #include "sol-util.h"
 #include "sol-vector.h"
+
+#include "bluez.h"
 
 #define BLUEZ_NAME_OWNER_MATCH "sender='org.freedesktop.DBus'," \
     "type='signal',"                                            \
@@ -54,7 +60,6 @@
     "interface='org.freedesktop.DBus',"                         \
     "member='InterfacesAdded'"
 
-
 struct match {
     unsigned int id;
     char *address;
@@ -67,13 +72,13 @@ struct device {
     char *path;
 };
 
-static sol_vector matches = SOL_VECTOR_INIT(struct match);
-static sol_vector devices = SOL_VECTOR_INIT(struct device);
+static struct sol_vector matches = SOL_VECTOR_INIT(struct match);
+static struct sol_vector devices = SOL_VECTOR_INIT(struct device);
 
 static sd_bus *system_bus;
-static sd_slot *name_owner_slot;
-static sd_slot *managed_objects_slot;
-static sd_slot *interfaces_added_slot;
+static sd_bus_slot *name_owner_slot;
+static sd_bus_slot *managed_objects_slot;
+static sd_bus_slot *interfaces_added_slot;
 
 static sd_bus *
 get_bus(void)
@@ -88,6 +93,13 @@ static void
 match_free(struct match *m)
 {
     free(m->address);
+}
+
+static void
+device_free(struct device *d)
+{
+    free(d->address);
+    free(d->path);
 }
 
 static bool
@@ -125,6 +137,40 @@ managed_objects_reply(sd_bus_message *m, void *userdata,
     return 0;
 }
 
+static bool
+track_bluez_devices(void)
+{
+    int r;
+
+    if (!name_owner_slot) {
+        r = sd_bus_add_match(get_bus(), &name_owner_slot, BLUEZ_NAME_OWNER_MATCH,
+            name_owner_changed, NULL);
+        SOL_INT_CHECK(r, < 0, false);
+    }
+
+    if (!interfaces_added_slot) {
+        r = sd_bus_add_match(get_bus(), &name_owner_slot, BLUEZ_INTERFACES_ADDED_MATCH,
+            interfaces_added, NULL);
+        SOL_INT_CHECK(r, < 0, false);
+    }
+
+    if (!managed_objects_slot) {
+        sd_bus_message *msg;
+        r = sd_bus_message_new_method_call(get_bus(), &msg,
+            "org.bluez",
+            "/",
+            "org.freedesktop.DBus.ObjectManager",
+            "GetManagedObjects");
+        SOL_INT_CHECK(r, < 0, false);
+
+        r = sd_bus_call_async(get_bus(), &managed_objects_slot, msg,
+            managed_objects_reply, NULL, 0);
+        SOL_INT_CHECK(r, < 0, false);
+    }
+
+    return true;
+}
+
 int
 bluez_match_device_by_address(const char* address,
     void (*cb)(const char *path, void *user_data),
@@ -151,31 +197,8 @@ bluez_match_device_by_address(const char* address,
     if (matches.len > 1)
         return m->id;
 
-    if (!name_owner_slot) {
-        r = sd_bus_add_match(get_bus(), &name_owner_slot, BLUEZ_NAME_OWNER_MATCH,
-            name_owner_changed, NULL);
-        SOL_INT_CHECK_GOTO(r, < 0, error);
-    }
-
-    if (!interfaces_added_slot) {
-        r = sd_bus_add_match(get_bus(), &name_owner_slot, BLUEZ_INTERFACES_ADDED_MATCH,
-            interfaces_added, NULL);
-        SOL_INT_CHECK_GOTO(r, < 0, error);
-    }
-
-    if (!managed_objects_slot) {
-        sd_bus_message *msg;
-        r = sd_bus_message_new_method_call(get_bus(), &msg,
-            "org.bluez",
-            "/",
-            "org.freedesktop.DBus.ObjectManager",
-            "GetManagedObjects");
-        SOL_INT_CHECK_GOTO(r, < 0, error);
-
-        r = sd_bus_call_async(get_bus(), &managed_objects_slot, msg,
-            managed_objects_reply, NULL, 0);
-        SOL_INT_CHECK_GOTO(r, < 0, error);
-    }
+    r = track_bluez_devices();
+    SOL_INT_CHECK_GOTO(r, != 0, error);
 
     return m->id;
 
@@ -184,7 +207,7 @@ error:
     return 0;
 }
 
-void bluez_remove_watch(unsigned int id)
+void bluez_remove_match(unsigned int id)
 {
     struct match *m;
     unsigned int i;

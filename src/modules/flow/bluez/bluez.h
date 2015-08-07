@@ -30,8 +30,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-int bluez_device_add_watch_by_address(const char* address,
+int bluez_match_device_by_address(const char* address,
     void (*cb)(const char *path, void *user_data),
     void *user_data);
 
-int bluez_remove_match(unsigned int id);
+void bluez_remove_match(unsigned int id);

@@ -46,6 +46,8 @@
 #include "sol-types.h"
 #include "sol-util.h"
 
+#include "bluez.h"
+
 struct sensor_data {
     char *remote;
 };

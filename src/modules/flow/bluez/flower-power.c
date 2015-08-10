@@ -54,6 +54,7 @@ struct sensor_data {
 
 struct led_data {
     char *remote;
+    unsigned int watch;
 };
 
 static int
@@ -80,21 +81,30 @@ flower_power_led_in_process(struct sol_flow_node *node,
 }
 
 static void
+found_device_cb(const char *path, void *user_data)
+{
+    struct led_data *led = user_data;
 
+
+}
 
 static int
 flower_power_led_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
 {
-    struct sensor_data *s = data;
+    struct led_data *led = data;
     struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
         (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
 
-    s->remote = strdup(opts->address);
+    led->remote = strdup(opts->address);
 
+    led->watch = bluez_match_device_by_address(led->remote, found_device_cb, led);
+    if (!led) {
+        free(led->remote);
+        return -EINVAL;
+    }
 
-
-    return -ENOSYS;
+    return 0;
 }
 
 static void

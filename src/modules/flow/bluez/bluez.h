@@ -30,6 +30,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define BLUEZ_DEVICE_IFACE "org.bluez.Device1"
+
 int bluez_match_device_by_address(const char* address,
     void (*cb)(const char *path, void *user_data),
     void *user_data);

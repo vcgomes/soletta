@@ -60,8 +60,6 @@
     "interface='org.freedesktop.DBus',"                         \
     "member='InterfacesAdded'"
 
-#define BLUEZ_DEVICE_IFACE "org.bluez.Device1"
-
 struct match {
     unsigned int id;
     char *address;

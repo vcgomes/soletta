@@ -60,6 +60,8 @@
     "interface='org.freedesktop.DBus',"                         \
     "member='InterfacesAdded'"
 
+#define BLUEZ_DEVICE_IFACE "org.bluez.Device1"
+
 struct match {
     unsigned int id;
     char *address;
@@ -79,6 +81,8 @@ static sd_bus *system_bus;
 static sd_bus_slot *name_owner_slot;
 static sd_bus_slot *managed_objects_slot;
 static sd_bus_slot *interfaces_added_slot;
+
+static bool track_bluez_devices(void);
 
 static sd_bus *
 get_bus(void)
@@ -102,7 +106,7 @@ device_free(struct device *d)
     free(d->path);
 }
 
-static bool
+static struct match *
 find_match(const char *address)
 {
     struct match *m;
@@ -110,23 +114,152 @@ find_match(const char *address)
 
     SOL_VECTOR_FOREACH_IDX(&matches, m, i) {
         if (streq(m->address, address))
-            return true;
+            return m;
     }
 
-    return false;
+    return NULL;
+}
+
+static struct device *
+find_device(const char *address)
+{
+    struct device *d;
+    unsigned int i;
+
+    SOL_VECTOR_FOREACH_IDX(&devices, d, i) {
+        if (streq(d->address, address))
+            return d;
+    }
+
+    return NULL;
+}
+
+static void
+stop_tracking_bluez_devices(void)
+{
+    struct device *d;
+    unsigned int i;
+
+    name_owner_slot = sd_bus_slot_unref(name_owner_slot);
+    interfaces_added_slot = sd_bus_slot_unref(interfaces_added_slot);
+    managed_objects_slot = sd_bus_slot_unref(managed_objects_slot);
+
+    SOL_VECTOR_FOREACH_IDX (&devices, d, i) {
+        device_free(d);
+    }
+    sol_vector_clear(&devices);
 }
 
 static int
 name_owner_changed(sd_bus_message *m, void *userdata,
     sd_bus_error *ret_error)
 {
+	const char *name, *old, *new;
+
+    if (sd_bus_message_read(m, "sss", &name, &old, &new) < 0)
+        return 0;
+
+    if (!old || !strlen(old)) {
+        /* 'org.bluez' appeared. */
+        track_bluez_devices();
+        return 0;
+    }
+
+    if (!new || !strlen(new)) {
+        stop_tracking_bluez_devices();
+        return 0;
+    }
+
     return 0;
+}
+
+static void
+filter_interfaces(sd_bus_message *m)
+{
+    const char *path;
+
+    if (sd_bus_message_read(m, "o", &path) < 0)
+        return;
+
+    if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
+        return;
+
+    do {
+        const char *iface;
+
+        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
+            break;
+
+        if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
+            return;
+
+        if (!streq(iface, BLUEZ_DEVICE_IFACE))
+            continue;
+
+        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sv}") < 0)
+            return;
+
+        do {
+            struct device *device;
+            struct match *match;
+            const char *property;
+            const char *value;
+
+            if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sv") < 0)
+                break;
+
+            if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &property) < 0)
+                return;
+
+            if (!streq(property, "Address"))
+                continue;
+
+            if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s") < 0)
+                return;
+
+            if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &value) < 0)
+                return;
+
+            device = find_device(value);
+            if (!device) {
+                device = sol_vector_append(&devices);
+                if (!device) {
+                    SOL_WRN("Could not allocate 'device'");
+                    return;
+                }
+
+                device->address = strdup(value);
+                if (!device->address) {
+                    sol_vector_del(&devices, devices.len - 1);
+                    return;
+                }
+
+                device->path = strdup(path);
+                if (!device->path) {
+                    free(device->address);
+                    sol_vector_del(&devices, devices.len - 1);
+                    return;
+                }
+            }
+
+            match = find_match(value);
+            if (!match)
+                continue;
+
+            match->cb(path, match->user_data);
+        } while (1);
+    } while (1);
 }
 
 static int
 interfaces_added(sd_bus_message *m, void *userdata,
     sd_bus_error *ret_error)
 {
+    if (ret_error)
+        return 0;
+
+    filter_interfaces(m);
+
     return 0;
 }
 
@@ -178,6 +311,7 @@ bluez_match_device_by_address(const char* address,
 {
     static unsigned int id;
     struct match *m;
+    struct device *d;
     int r;
 
     if (find_match(address))
@@ -192,6 +326,11 @@ bluez_match_device_by_address(const char* address,
     m->cb = cb;
     m->user_data = user_data;
     m->id = ++id;
+
+    d = find_device(address);
+    if (d) {
+        m->cb(d->path, user_data);
+    }
 
     /* The watches were already added */
     if (matches.len > 1)
@@ -219,7 +358,6 @@ void bluez_remove_match(unsigned int id)
         }
     }
 
-    if (matches.len == 0) {
-        /* FIXME: remove the slots */
-    }
+    if (matches.len == 0)
+        stop_tracking_bluez_devices();
 }

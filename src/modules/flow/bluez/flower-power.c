@@ -79,6 +79,9 @@ flower_power_led_in_process(struct sol_flow_node *node,
 	return -ENOSYS;
 }
 
+static void
+
+
 static int
 flower_power_led_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
@@ -91,7 +94,7 @@ flower_power_led_open(struct sol_flow_node *node, void *data,
 
 
 
-	return -ENOSYS;
+    return -ENOSYS;
 }
 
 static void

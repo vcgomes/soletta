@@ -61,10 +61,10 @@
     "member='InterfacesAdded'"
 
 struct match {
-    unsigned int id;
     char *address;
     void (*cb)(const char *path, void *user_data);
     void *user_data;
+    unsigned int id;
 };
 
 struct device {

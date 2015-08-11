@@ -55,6 +55,7 @@ struct sensor_data {
 struct led_data {
     char *remote;
     unsigned int watch;
+    sd_bus_slot *services_watch;
 };
 
 static int
@@ -84,6 +85,8 @@ static void
 found_device_cb(const char *path, void *user_data)
 {
     struct led_data *led = user_data;
+
+    SOL_LOG("found device path %s", path);
 
 
 }

@@ -48,6 +48,13 @@
 
 #include "bluez.h"
 
+#define GATT_SERVICES_CHANGED_WATCH "sender='org.freedesktop.DBus',"    \
+    "type='signal',"                                                    \
+    "interface='org.freedesktop.DBus.Properties',"                      \
+    "member='PropertiesChnaged',"                                       \
+    "path='%s',"                                                        \
+    "arg0='org.bluez.Device1',"
+
 struct sensor_data {
     char *remote;
 };
@@ -62,7 +69,7 @@ static int
 flower_power_sensor_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
 {
-	return -ENOSYS;
+    return -ENOSYS;
 }
 
 static void
@@ -78,17 +85,36 @@ flower_power_led_in_process(struct sol_flow_node *node,
     uint16_t conn_id,
     const struct sol_flow_packet *packet)
 {
-	return -ENOSYS;
+    return -ENOSYS;
+}
+
+static int
+gatt_services_changed(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    return 0;
 }
 
 static void
 found_device_cb(const char *path, void *user_data)
 {
     struct led_data *led = user_data;
+    char matchstr[256];
+    int r;
 
-    SOL_LOG("found device path %s", path);
+    SOL_DBG("found device path %s", path);
 
+    r = snprintf(matchstr, sizeof(matchstr), GATT_SERVICES_CHANGED_WATCH, path);
+    if (r < 0)
+        return;
 
+    if (led->services_watch)
+        return;
+
+    if (sd_bus_add_match(bluez_get_bus(), &led->services_watch, matchstr,
+            gatt_services_changed, led) < 0)
+        return;
+
+    return;
 }
 
 static int

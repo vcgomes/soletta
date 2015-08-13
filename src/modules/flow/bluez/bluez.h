@@ -32,6 +32,8 @@
 
 #define BLUEZ_DEVICE_IFACE "org.bluez.Device1"
 
+sd_bus *bluez_get_bus(void);
+
 int bluez_match_device_by_address(const char* address,
     void (*cb)(const char *path, void *user_data),
     void *user_data);

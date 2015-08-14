@@ -44,6 +44,13 @@
 #include "sol-util.h"
 #include "sol-vector.h"
 
+#define SERVICE_NAME_OWNER_MATCH "sender='org.freedesktop.DBus'," \
+	"type='signal',"                                            \
+	"interface='org.freedesktop.DBus',"                         \
+	"member='NameOwnerChanged',"                                \
+	"path='/org/freedesktop/DBus',"                             \
+	"arg0='%s'"
+
 struct property_table {
     const struct sol_bus_properties *properties;
     const void *data;
@@ -52,11 +59,19 @@ struct property_table {
     sd_bus_slot *getall_slot;
 };
 
+struct service_watch {
+    sd_bus_slot *slot;
+    void (*connected)(void *data, const char *unique);
+    void (*disconnected)(void *data);
+    void *data;
+};
+
 struct ctx {
     struct sol_mainloop_source *mainloop_source;
     sd_bus *bus;
     sd_event_source *ping;
     struct sol_ptr_vector property_tables;
+    struct sol_vector watches;
     bool exiting;
 };
 
@@ -485,6 +500,74 @@ sol_bus_unmap_cached_properties(const struct sol_bus_properties property_table[]
     free(found);
 
     return 0;
+}
+
+static int name_owner_changed(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    struct service_watch *w = userdata;
+    const char *name, *old, *new;
+
+    if (sd_bus_message_read(m, "sss", &name, &old, &new) < 0)
+		return 0;
+
+    if (new && w->connected) {
+        /* Assuming that when a name is replaced, calling 'connected()' is
+         * the right thing to do.
+         */
+        w->connected(w->data, new);
+        return 0;
+    }
+
+    if (w->disconnected)
+        w->disconnected(w->data);
+
+    return 0;
+}
+
+sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
+    void (*connected)(void *data, const char *unique),
+    void (*disconnected)(void *data),
+    void *data)
+{
+    struct service_watch *w;
+    sd_bus_slot *slot = NULL;
+    char matchstr[512];
+    int r;
+
+    r = snprintf(matchstr, sizeof(matchstr), SERVICE_NAME_OWNER_MATCH, service);
+    SOL_INT_CHECK(r, < 0, NULL);
+
+    w = calloc(1, sizeof(struct service_watch));
+    SOL_NULL_CHECK(w, NULL);
+
+    w->connected = connected;
+    w->disconnected = disconnected;
+    w->data = data;
+
+    r = sd_bus_add_match(bus, &slot, matchstr, name_owner_changed, w);
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    w->slot = slot;
+
+    sd_bus_slot_set_userdata(slot, w);
+
+    return slot;
+
+error:
+    free(w);
+    return NULL;
+}
+
+bool sol_bus_remove_watch(sd_bus_slot *slot)
+{
+    struct service_watch *w;
+
+    w = sd_bus_slot_get_userdata(slot);
+    free(w);
+
+    sd_bus_slot_unref(slot);
+
+    return true;
 }
 
 int

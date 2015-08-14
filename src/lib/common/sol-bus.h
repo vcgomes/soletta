@@ -54,6 +54,13 @@ int sol_bus_map_cached_properties(sd_bus *bus,
 int sol_bus_unmap_cached_properties(const struct sol_bus_properties property_table[],
     const void *data);
 
+sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
+    void (*connected)(void *data, const char *unique),
+    void (*disconnected)(void *data),
+    void *data);
+
+bool sol_bus_remove_watch(sd_bus_slot *slot);
+
 /* convenience methods */
 int sol_bus_log_callback(sd_bus_message *reply, void *userdata,
     sd_bus_error *ret_error);

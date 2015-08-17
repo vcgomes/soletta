@@ -44,12 +44,12 @@
 #include "sol-util.h"
 #include "sol-vector.h"
 
-#define SERVICE_NAME_OWNER_MATCH "sender='org.freedesktop.DBus'," \
-	"type='signal',"                                            \
-	"interface='org.freedesktop.DBus',"                         \
-	"member='NameOwnerChanged',"                                \
-	"path='/org/freedesktop/DBus',"                             \
-	"arg0='%s'"
+#define SERVICE_NAME_OWNER_MATCH "sender='org.freedesktop.DBus',"   \
+    "type='signal',"                                                \
+    "interface='org.freedesktop.DBus',"                             \
+    "member='NameOwnerChanged',"                                    \
+    "path='/org/freedesktop/DBus',"                                 \
+    "arg0='%s'"
 
 struct property_table {
     const struct sol_bus_properties *properties;
@@ -60,7 +60,6 @@ struct property_table {
 };
 
 struct service_watch {
-    sd_bus_slot *slot;
     void (*connected)(void *data, const char *unique);
     void (*disconnected)(void *data);
     void *data;
@@ -546,8 +545,6 @@ sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
 
     r = sd_bus_add_match(bus, &slot, matchstr, name_owner_changed, w);
     SOL_INT_CHECK_GOTO(r, < 0, error);
-
-    w->slot = slot;
 
     sd_bus_slot_set_userdata(slot, w);
 

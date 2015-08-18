@@ -507,7 +507,7 @@ static int name_owner_changed(sd_bus_message *m, void *userdata, sd_bus_error *r
     const char *name, *old, *new;
 
     if (sd_bus_message_read(m, "sss", &name, &old, &new) < 0)
-		return 0;
+        return 0;
 
     if (new && w->connected) {
         /* Assuming that when a name is replaced, calling 'connected()' is

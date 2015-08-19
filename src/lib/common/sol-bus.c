@@ -65,9 +65,17 @@ struct property_table {
 };
 
 struct service_watch {
+    sd_bus_slot *slot;
     void (*connected)(void *data, const char *unique);
     void (*disconnected)(void *data);
     void *data;
+};
+
+struct interfaces_watch {
+    const struct sol_bus_interfaces *interfaces;
+    const void *data;
+    sd_bus_slot *interfaces_added;
+    sd_bus_slot *managed_objects;
 };
 
 struct ctx {
@@ -75,7 +83,7 @@ struct ctx {
     sd_bus *bus;
     sd_event_source *ping;
     struct sol_ptr_vector property_tables;
-    struct sol_vector watches;
+    struct sol_ptr_vector watches;
     bool exiting;
 };
 
@@ -273,6 +281,7 @@ sol_bus_get(void (*bus_initialized)(sd_bus *bus))
     SOL_INT_CHECK_GOTO(r, < 0, fail);
 
     sol_ptr_vector_init(&_ctx.property_tables);
+    sol_ptr_vector_init(&_ctx.watches);
 
     if (bus_initialized)
         bus_initialized(_ctx.bus);
@@ -293,6 +302,7 @@ sol_bus_close(void)
 
     if (_ctx.bus) {
         struct property_table *t;
+        struct service_watch *w;
         uint16_t i;
 
         SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.property_tables, t, i) {
@@ -301,6 +311,13 @@ sol_bus_close(void)
             free(t);
         }
         sol_ptr_vector_clear(&_ctx.property_tables);
+
+
+        SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.watches, w, i) {
+            sd_bus_slot_unref(w->slot);
+            free(w);
+        }
+        sol_ptr_vector_clear(&_ctx.watches);
 
         sd_bus_flush(_ctx.bus);
         sd_bus_close(_ctx.bus);
@@ -572,15 +589,22 @@ sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
     w->disconnected = disconnected;
     w->data = data;
 
+    r = sol_ptr_vector_append(&_ctx.watches, w);
+    SOL_INT_CHECK_GOTO(r, < 0, append_error);
+
     r = sd_bus_add_match(bus, &slot, matchstr, name_owner_changed, w);
-    SOL_INT_CHECK_GOTO(r, < 0, error);
+    SOL_INT_CHECK_GOTO(r, < 0, match_error);
 
     sd_bus_slot_set_userdata(slot, w);
+    w->slot = slot;
 
     return slot;
 
-error:
+match_error:
+    sol_ptr_vector_del(&_ctx.watches, sol_ptr_vector_get_len(&_ctx.watches) - 1);
+append_error:
     free(w);
+
     return NULL;
 }
 
@@ -589,6 +613,8 @@ bool sol_bus_remove_watch(sd_bus_slot *slot)
     struct service_watch *w;
 
     w = sd_bus_slot_get_userdata(slot);
+
+    sol_ptr_vector_remove(&_ctx.watches, w);
     free(w);
 
     sd_bus_slot_unref(slot);

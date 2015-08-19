@@ -51,6 +51,11 @@
     "path='/org/freedesktop/DBus',"                                 \
     "arg0='%s'"
 
+#define INTERFACES_ADDED_MATCH "sender='org.freedesktop.DBus',"     \
+    "type='signal',"                                                \
+    "interface='org.freedesktop.DBus.ObjectManager',"               \
+    "member='InterfacesAdded'"                                      \
+
 struct property_table {
     const struct sol_bus_properties *properties;
     const void *data;
@@ -521,6 +526,30 @@ static int name_owner_changed(sd_bus_message *m, void *userdata, sd_bus_error *r
         w->disconnected(w->data);
 
     return 0;
+}
+
+
+int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
+    const struct sol_bus_interfaces interfaces[],
+    const void *data)
+{
+    sd_bus_message *m = NULL;
+    const struct sol_bus_interfaces *iter;
+    char matchstr[512];
+    int r;
+
+    for (iter = interfaces; iter->name;)
+        iter++;
+
+    SOL_INT_CHECK(iter - interfaces, >= (int)sizeof(uint64_t) * CHAR_BIT, -ENOBUFS);
+
+    sd_bus_add_math
+}
+
+int sol_bus_remove_interfaces_watch(const struct sol_bus_interfaces interfaces[],
+    const void *data)
+{
+
 }
 
 sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,

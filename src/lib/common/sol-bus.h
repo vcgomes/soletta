@@ -41,6 +41,12 @@ struct sol_bus_properties {
     bool (*set)(void *data, sd_bus_message *m);
 };
 
+struct sol_bus_interfaces {
+    const char *name;
+    void (*appeared)(void *data, const char *path);
+    void (*removed)(void *data, const char *path);
+};
+
 sd_bus *sol_bus_get(void (*bus_initialized)(sd_bus *bus));
 void sol_bus_close(void);
 
@@ -50,8 +56,14 @@ int sol_bus_map_cached_properties(sd_bus *bus,
     void (*changed)(void *data, uint64_t mask),
     const void *data);
 
-
 int sol_bus_unmap_cached_properties(const struct sol_bus_properties property_table[],
+    const void *data);
+
+int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
+    const struct sol_bus_interfaces interfaces[],
+    const void *data);
+
+int sol_bus_remove_interfaces_watch(const struct sol_bus_interfaces interfaces[],
     const void *data);
 
 sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,

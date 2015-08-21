@@ -53,6 +53,7 @@
 
 #define INTERFACES_ADDED_MATCH "sender='org.freedesktop.DBus',"     \
     "type='signal',"                                                \
+    "name='%s',"                                                    \
     "interface='org.freedesktop.DBus.ObjectManager',"               \
     "member='InterfacesAdded'"                                      \
 
@@ -83,7 +84,8 @@ struct ctx {
     sd_bus *bus;
     sd_event_source *ping;
     struct sol_ptr_vector property_tables;
-    struct sol_ptr_vector watches;
+    struct sol_ptr_vector service_watches;
+    struct sol_ptr_vector interfaces_watches;
     bool exiting;
 };
 
@@ -281,7 +283,8 @@ sol_bus_get(void (*bus_initialized)(sd_bus *bus))
     SOL_INT_CHECK_GOTO(r, < 0, fail);
 
     sol_ptr_vector_init(&_ctx.property_tables);
-    sol_ptr_vector_init(&_ctx.watches);
+    sol_ptr_vector_init(&_ctx.service_watches);
+    sol_ptr_vector_init(&_ctx.interfaces_watches);
 
     if (bus_initialized)
         bus_initialized(_ctx.bus);
@@ -313,11 +316,11 @@ sol_bus_close(void)
         sol_ptr_vector_clear(&_ctx.property_tables);
 
 
-        SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.watches, w, i) {
+        SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.service_watches, w, i) {
             sd_bus_slot_unref(w->slot);
             free(w);
         }
-        sol_ptr_vector_clear(&_ctx.watches);
+        sol_ptr_vector_clear(&_ctx.service_watches);
 
         sd_bus_flush(_ctx.bus);
         sd_bus_close(_ctx.bus);
@@ -523,7 +526,8 @@ sol_bus_unmap_cached_properties(const struct sol_bus_properties property_table[]
     return 0;
 }
 
-static int name_owner_changed(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+static int
+name_owner_changed(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
     struct service_watch *w = userdata;
     const char *name, *old, *new;
@@ -545,6 +549,50 @@ static int name_owner_changed(sd_bus_message *m, void *userdata, sd_bus_error *r
     return 0;
 }
 
+static void
+filter_interfaces(sd_bus_message *m)
+{
+	const char *path;
+
+	if (sd_bus_message_read(m, "o", &path) < 0)
+		return;
+
+	if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
+		return;
+
+	do {
+		const char *iface;
+
+		if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
+			break;
+
+		if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
+			return;
+
+		if (!streq(iface, BLUEZ_DEVICE_IFACE))
+			continue;
+
+        filter_device_properties(m, path);
+
+	} while (1);
+}
+
+static int
+interfaces_added_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    if (ret_error)
+        return -EINVAL;
+
+    filter_interfaces(m);
+
+    return 0;
+}
+
+static int
+managed_objects_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    return 0;
+}
 
 int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
     const struct sol_bus_interfaces interfaces[],
@@ -552,6 +600,7 @@ int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
 {
     sd_bus_message *m = NULL;
     const struct sol_bus_interfaces *iter;
+    struct interfaces_watch *iface;
     char matchstr[512];
     int r;
 
@@ -560,13 +609,69 @@ int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
 
     SOL_INT_CHECK(iter - interfaces, >= (int)sizeof(uint64_t) * CHAR_BIT, -ENOBUFS);
 
-    sd_bus_add_math
+    r = snprintf(matchstr, sizeof(matchstr), INTERFACES_ADDED_MATCH, service);
+    SOL_INT_CHECK(r, < 0, -ENOMEM);
+
+    iface = calloc(1, sizeof(struct interfaces_watch));
+    SOL_NULL_CHECK(iface, -ENOMEM);
+
+    iface->interfaces = interfaces;
+    iface->data = data;
+
+    r = sd_bus_add_match(bus, &iface->interfaces_added, matchstr, interfaces_added_cb, iface);
+    SOL_INT_CHECK_GOTO(r, < 0, error_match);
+
+    r = sol_ptr_vector_append(&_ctx.interfaces_watches, iface);
+    SOL_INT_CHECK_GOTO(r, < 0, error_append);
+
+    r = sd_bus_message_new_method_call(bus, &m, service, "/",
+        "org.freedesktop.DBus.ObjectManager", "GetManagedObjects");
+    SOL_INT_CHECK_GOTO(r, < 0, error_message);
+
+    r = sd_bus_call_async(bus, &iface->managed_objects, m, managed_objects_cb, iface, 0);
+    SOL_INT_CHECK_GOTO(r, < 0, error_call);
+
+    return 0;
+
+error_call:
+    sd_bus_message_unref(m);
+
+error_message:
+    sol_ptr_vector_del(&_ctx.interfaces_watches,
+        sol_ptr_vector_get_len(&_ctx.interfaces_watches) - 1);
+
+error_append:
+    sd_bus_slot_unref(iface->interfaces_added);
+
+error_match:
+    free(iface);
+
+    return -EINVAL;
+
 }
 
 int sol_bus_remove_interfaces_watch(const struct sol_bus_interfaces interfaces[],
     const void *data)
 {
+	struct interfaces_watch *w, *found = NULL;
+	uint16_t i;
 
+	SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.interfaces_watches, w, i) {
+        if (w->interfaces == interfaces && w->data == data) {
+            found = w;
+            break;
+        }
+	}
+
+    if (!found)
+        return -ENODATA;
+
+    sd_bus_slot_unref(found->interfaces_added);
+    sd_bus_slot_unref(found->managed_objects);
+    sol_ptr_vector_del(&_ctx.interfaces_watches, i);
+    free(w);
+
+    return 0;
 }
 
 sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
@@ -589,7 +694,7 @@ sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
     w->disconnected = disconnected;
     w->data = data;
 
-    r = sol_ptr_vector_append(&_ctx.watches, w);
+    r = sol_ptr_vector_append(&_ctx.service_watches, w);
     SOL_INT_CHECK_GOTO(r, < 0, append_error);
 
     r = sd_bus_add_match(bus, &slot, matchstr, name_owner_changed, w);
@@ -601,7 +706,8 @@ sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
     return slot;
 
 match_error:
-    sol_ptr_vector_del(&_ctx.watches, sol_ptr_vector_get_len(&_ctx.watches) - 1);
+    sol_ptr_vector_del(&_ctx.service_watches,
+        sol_ptr_vector_get_len(&_ctx.service_watches) - 1);
 append_error:
     free(w);
 
@@ -614,7 +720,7 @@ bool sol_bus_remove_watch(sd_bus_slot *slot)
 
     w = sd_bus_slot_get_userdata(slot);
 
-    sol_ptr_vector_remove(&_ctx.watches, w);
+    sol_ptr_vector_remove(&_ctx.service_watches, w);
     free(w);
 
     sd_bus_slot_unref(slot);

@@ -549,41 +549,65 @@ name_owner_changed(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
     return 0;
 }
 
-static void
-filter_interfaces(sd_bus_message *m)
+static const struct sol_bus_interfaces *
+find_interface(const struct interfaces_watch *w, const char *iface)
 {
-	const char *path;
+    const struct sol_bus_interfaces *s;
 
-	if (sd_bus_message_read(m, "o", &path) < 0)
-		return;
+    for (s = w->interfaces; s->name; s++) {
+        if (streq(iface, s->name))
+            return s;
+    }
+    return NULL;
+}
 
-	if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
-		return;
+static void
+filter_device_properties(sd_bus_message *m, const char *path)
+{
 
-	do {
-		const char *iface;
+}
 
-		if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
-			break;
+static void
+filter_interfaces(struct interfaces_watch *w, sd_bus_message *m)
+{
+    const char *path;
 
-		if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
-			return;
+    if (sd_bus_message_read(m, "o", &path) < 0)
+        return;
 
-		if (!streq(iface, BLUEZ_DEVICE_IFACE))
-			continue;
+    if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
+        return;
+
+    do {
+        const struct sol_bus_interfaces *s;
+        const char *iface;
+
+        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
+            break;
+
+        if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
+            return;
+
+        s = find_interface(w, iface);
+        if (!s)
+            continue;
+
+        s->appeared((void *) w->data, path);
 
         filter_device_properties(m, path);
 
-	} while (1);
+    } while (1);
 }
 
 static int
 interfaces_added_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
+    struct interfaces_watch *w = userdata;
+
     if (ret_error)
         return -EINVAL;
 
-    filter_interfaces(m);
+    filter_interfaces(w, m);
 
     return 0;
 }
@@ -653,15 +677,15 @@ error_match:
 int sol_bus_remove_interfaces_watch(const struct sol_bus_interfaces interfaces[],
     const void *data)
 {
-	struct interfaces_watch *w, *found = NULL;
-	uint16_t i;
+    struct interfaces_watch *w, *found = NULL;
+    uint16_t i;
 
-	SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.interfaces_watches, w, i) {
+    SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.interfaces_watches, w, i) {
         if (w->interfaces == interfaces && w->data == data) {
             found = w;
             break;
         }
-	}
+    }
 
     if (!found)
         return -ENODATA;

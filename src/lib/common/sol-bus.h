@@ -47,8 +47,20 @@ struct sol_bus_interfaces {
     void (*removed)(void *data, const char *path);
 };
 
+struct sol_bus_client;
+
 sd_bus *sol_bus_get(void (*bus_initialized)(sd_bus *bus));
 void sol_bus_close(void);
+
+struct sol_bus_client *sol_bus_client_new(sd_bus *bus, const char *service);
+
+int sol_bus_client_set_connect_handler(struct sol_bus_client *client,
+		void (*connect)(void *data, const char *unique),
+		void *data);
+
+int sol_bus_client_set_disconnect_handler(struct sol_bus_client *client,
+		void (*disconnect)(void *data),
+		void *data);
 
 int sol_bus_map_cached_properties(sd_bus *bus,
     const char *dest, const char *path, const char *iface,

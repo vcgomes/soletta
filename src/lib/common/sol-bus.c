@@ -83,10 +83,19 @@ struct ctx {
     struct sol_mainloop_source *mainloop_source;
     sd_bus *bus;
     sd_event_source *ping;
-    struct sol_ptr_vector property_tables;
-    struct sol_ptr_vector service_watches;
-    struct sol_ptr_vector interfaces_watches;
+    struct sol_ptr_vector clients;
     bool exiting;
+};
+
+struct sol_bus_client {
+    sd_bus *bus;
+    const char *service;
+    struct sol_vector property_tables;
+    struct sol_vector interface_watches;
+    void (*connect)(void *data, const char *unique);
+    void *connect_data;
+    void (*disconnect)(void *data);
+    void *disconnect_data;
 };
 
 static struct ctx _ctx;
@@ -339,6 +348,20 @@ sol_bus_close(void)
     }
 }
 
+struct sol_bus_client *
+sol_bus_client_new(sd_bus *bus, const char *service)
+{
+    return NULL;
+}
+
+const char *
+sol_bus_client_get_service(struct sol_bus_client *client)
+{
+    SOL_NULL_CHECK(client, NULL);
+
+    return client->service;
+}
+
 static int
 _message_map_all_properties(sd_bus_message *m,
     struct property_table *t, sd_bus_error *ret_error)
@@ -432,9 +455,9 @@ _getall_properties(sd_bus_message *reply, void *userdata,
     return _message_map_all_properties(reply, t, ret_error);
 }
 
-int
-sol_bus_map_cached_properties(sd_bus *bus,
-    const char *dest, const char *path, const char *iface,
+unsigned int
+sol_bus_map_cached_properties(struct sol_bus_client *client,
+    const char *path, const char *iface,
     const struct sol_bus_properties property_table[],
     void (*changed)(void *data, uint64_t mask),
     const void *data)
@@ -462,14 +485,11 @@ sol_bus_map_cached_properties(sd_bus *bus,
         dest, path, iface);
     SOL_INT_CHECK(r, >= (int)sizeof(matchstr), -ENOBUFS);
 
-    t = calloc(1, sizeof(*t));
+    t = sol_vector_append(&client->property_tables);
     SOL_NULL_CHECK(t, -ENOMEM);
     t->properties = property_table;
     t->data = data;
     t->changed = changed;
-
-    r = sol_ptr_vector_append(&_ctx.property_tables, t);
-    SOL_INT_CHECK_GOTO(r, < 0, fail_append);
 
     r = sd_bus_add_match(bus, &t->match_slot, matchstr,
         _match_properties_changed, t);
@@ -495,8 +515,8 @@ fail_getall:
     sd_bus_message_unref(m);
     sd_bus_slot_unref(t->match_slot);
 fail_match:
-    sol_ptr_vector_del(&_ctx.property_tables,
-        sol_ptr_vector_get_len(&_ctx.property_tables) - 1);
+    sol_vector_del(&client->property_tables,
+        sol_vector_get_len(&client->property_tables) - 1);
 fail_append:
     free(t);
 
@@ -504,13 +524,14 @@ fail_append:
 }
 
 int
-sol_bus_unmap_cached_properties(const struct sol_bus_properties property_table[],
+sol_bus_unmap_cached_properties(struct sol_bus_client *client,
+    const struct sol_bus_properties property_table[],
     const void *data)
 {
     struct property_table *t, *found = NULL;
     uint16_t i;
 
-    SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.property_tables, t, i) {
+    SOL_PTR_VECTOR_FOREACH_IDX (&client->property_tables, t, i) {
         if (t->properties == property_table && t->data == data) {
             found = t;
             break;
@@ -520,7 +541,7 @@ sol_bus_unmap_cached_properties(const struct sol_bus_properties property_table[]
 
     sd_bus_slot_unref(found->match_slot);
     sd_bus_slot_unref(found->getall_slot);
-    sol_ptr_vector_del(&_ctx.property_tables, i);
+    sol_ptr_vector_del(&client->property_tables, i);
     free(found);
 
     return 0;
@@ -618,7 +639,7 @@ managed_objects_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
     return 0;
 }
 
-int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
+int sol_bus_watch_interfaces(struct sol_bus_client *client,
     const struct sol_bus_interfaces interfaces[],
     const void *data)
 {
@@ -636,7 +657,7 @@ int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
     r = snprintf(matchstr, sizeof(matchstr), INTERFACES_ADDED_MATCH, service);
     SOL_INT_CHECK(r, < 0, -ENOMEM);
 
-    iface = calloc(1, sizeof(struct interfaces_watch));
+    iface = sol_vector_append(&client->interface_watches);
     SOL_NULL_CHECK(iface, -ENOMEM);
 
     iface->interfaces = interfaces;
@@ -644,9 +665,6 @@ int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
 
     r = sd_bus_add_match(bus, &iface->interfaces_added, matchstr, interfaces_added_cb, iface);
     SOL_INT_CHECK_GOTO(r, < 0, error_match);
-
-    r = sol_ptr_vector_append(&_ctx.interfaces_watches, iface);
-    SOL_INT_CHECK_GOTO(r, < 0, error_append);
 
     r = sd_bus_message_new_method_call(bus, &m, service, "/",
         "org.freedesktop.DBus.ObjectManager", "GetManagedObjects");
@@ -661,13 +679,14 @@ error_call:
     sd_bus_message_unref(m);
 
 error_message:
-    sol_ptr_vector_del(&_ctx.interfaces_watches,
-        sol_ptr_vector_get_len(&_ctx.interfaces_watches) - 1);
-
 error_append:
     sd_bus_slot_unref(iface->interfaces_added);
 
 error_match:
+    sol_vector_del(&client->interfaces_watches,
+        sol_vector_get_len(&client->interfaces_watches) - 1);
+
+error_call:
     free(iface);
 
     return -EINVAL;

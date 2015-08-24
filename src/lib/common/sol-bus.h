@@ -54,16 +54,18 @@ void sol_bus_close(void);
 
 struct sol_bus_client *sol_bus_client_new(sd_bus *bus, const char *service);
 
+const char *sol_bus_client_get_service(struct sol_bus_client *client);
+
 int sol_bus_client_set_connect_handler(struct sol_bus_client *client,
-		void (*connect)(void *data, const char *unique),
-		void *data);
+    void (*connect)(void *data, const char *unique),
+    void *data);
 
 int sol_bus_client_set_disconnect_handler(struct sol_bus_client *client,
-		void (*disconnect)(void *data),
-		void *data);
+    void (*disconnect)(void *data),
+    void *data);
 
-int sol_bus_map_cached_properties(sd_bus *bus,
-    const char *dest, const char *path, const char *iface,
+int sol_bus_map_cached_properties(struct sol_bus_client *client,
+    const char *path, const char *iface,
     const struct sol_bus_properties property_table[],
     void (*changed)(void *data, uint64_t mask),
     const void *data);
@@ -71,19 +73,12 @@ int sol_bus_map_cached_properties(sd_bus *bus,
 int sol_bus_unmap_cached_properties(const struct sol_bus_properties property_table[],
     const void *data);
 
-int sol_bus_watch_interfaces(sd_bus *bus, const char *service,
+int sol_bus_watch_interfaces(struct sol_bus_client *client,
     const struct sol_bus_interfaces interfaces[],
     const void *data);
 
 int sol_bus_remove_interfaces_watch(const struct sol_bus_interfaces interfaces[],
     const void *data);
-
-sd_bus_slot *sol_bus_watch_service(sd_bus *bus, const char *service,
-    void (*connected)(void *data, const char *unique),
-    void (*disconnected)(void *data),
-    void *data);
-
-bool sol_bus_remove_watch(sd_bus_slot *slot);
 
 /* convenience methods */
 int sol_bus_log_callback(sd_bus_message *reply, void *userdata,

@@ -92,6 +92,7 @@ struct sol_bus_client {
     const char *service;
     struct sol_vector property_tables;
     struct sol_vector interface_watches;
+    sd_bus_slot *name_changed;
     void (*connect)(void *data, const char *unique);
     void *connect_data;
     void (*disconnect)(void *data);
@@ -693,13 +694,14 @@ error_call:
 
 }
 
-int sol_bus_remove_interfaces_watch(const struct sol_bus_interfaces interfaces[],
+int sol_bus_remove_interfaces_watch(struct sol_bus_client *client,
+    const struct sol_bus_interfaces interfaces[],
     const void *data)
 {
     struct interfaces_watch *w, *found = NULL;
     uint16_t i;
 
-    SOL_PTR_VECTOR_FOREACH_IDX (&_ctx.interfaces_watches, w, i) {
+    SOL_VECTOR_FOREACH_IDX (&client->interfaces_watches, w, i) {
         if (w->interfaces == interfaces && w->data == data) {
             found = w;
             break;
@@ -711,8 +713,7 @@ int sol_bus_remove_interfaces_watch(const struct sol_bus_interfaces interfaces[]
 
     sd_bus_slot_unref(found->interfaces_added);
     sd_bus_slot_unref(found->managed_objects);
-    sol_ptr_vector_del(&_ctx.interfaces_watches, i);
-    free(w);
+    sol_vector_del(&client->interfaces_watches, i);
 
     return 0;
 }

@@ -60,6 +60,7 @@ struct ctx {
         enum sol_platform_state system_state;
     } properties;
 
+	struct sol_bus_client *systemd;
     struct sol_ptr_vector services;
 };
 
@@ -130,6 +131,9 @@ _bus_initialized(sd_bus *bus)
 
     _ctx.properties.system_state = SOL_PLATFORM_STATE_UNKNOWN;
 
+    _ctx.systemd = sol_bus_client_new(bus, "org.freedesktop.systemd1");
+    SOL_NULL_CHECK_GOTO(_ctx.systemd, fail_new_client);
+
     r = sd_bus_message_new_method_call(bus, &m,
         "org.freedesktop.systemd1",
         "/org/freedesktop/systemd1",
@@ -141,8 +145,7 @@ _bus_initialized(sd_bus *bus)
     SOL_INT_CHECK_GOTO(r, < 0, fail_call);
     sd_bus_message_unref(m);
 
-    r = sol_bus_map_cached_properties(bus,
-        "org.freedesktop.systemd1",
+    r = sol_bus_map_cached_properties(_ctx.systemd,
         "/org/freedesktop/systemd1",
         "org.freedesktop.systemd1.Manager",
         _manager_properties,
@@ -156,6 +159,7 @@ fail_call:
     sd_bus_message_unref(m);
 fail_map_properties:
 fail_new_method:
+fail_new_client:
     sol_bus_close();
 }
 

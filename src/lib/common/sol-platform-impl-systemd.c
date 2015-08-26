@@ -277,8 +277,7 @@ _add_service_monitor(sd_bus_message *reply, void *userdata,
     r = sd_bus_message_read(reply, "o", &path);
     SOL_INT_CHECK(r, < 0, r);
 
-    sol_bus_map_cached_properties(sd_bus_message_get_bus(reply),
-        "org.freedesktop.systemd1",
+    sol_bus_map_cached_properties(_ctx.systemd,
         path,
         "org.freedesktop.systemd1.Unit",
         _service_properties,

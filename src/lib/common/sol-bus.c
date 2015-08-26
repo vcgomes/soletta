@@ -711,7 +711,8 @@ int sol_bus_watch_interfaces(struct sol_bus_client *client,
     if (client->interfaces_added)
         return 0;
 
-    r = sd_bus_add_match(client->bus, &client->interfaces_added, matchstr, interfaces_added_cb, iface);
+    r = sd_bus_add_match(client->bus, &client->interfaces_added,
+		    matchstr, interfaces_added_cb, iface);
     SOL_INT_CHECK_GOTO(r, < 0, error_match);
 
     if (client->managed_objects)
@@ -721,7 +722,8 @@ int sol_bus_watch_interfaces(struct sol_bus_client *client,
         "org.freedesktop.DBus.ObjectManager", "GetManagedObjects");
     SOL_INT_CHECK_GOTO(r, < 0, error_message);
 
-    r = sd_bus_call_async(client->bus, &client->managed_objects, m, managed_objects_cb, client, 0);
+    r = sd_bus_call_async(client->bus, &client->managed_objects,
+		    m, managed_objects_cb, client, 0);
     SOL_INT_CHECK_GOTO(r, < 0, error_call);
 
     return 0;

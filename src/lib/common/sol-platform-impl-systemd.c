@@ -351,7 +351,7 @@ sol_platform_impl_del_service_monitor(const char *service)
     if (found->slot)
         sd_bus_slot_unref(found->slot);
     else
-        sol_bus_unmap_cached_properties(_service_properties, found);
+        sol_bus_unmap_cached_properties(_ctx.systemd, _service_properties, found);
 
     sol_ptr_vector_del(&_ctx.services, i);
     free(found);

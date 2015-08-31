@@ -54,6 +54,8 @@ void sol_bus_close(void);
 
 struct sol_bus_client *sol_bus_client_new(sd_bus *bus, const char *service);
 
+void sol_bus_client_free(struct sol_bus_client *client);
+
 const char *sol_bus_client_get_service(struct sol_bus_client *client);
 
 sd_bus *sol_bus_client_get_bus(struct sol_bus_client *client);

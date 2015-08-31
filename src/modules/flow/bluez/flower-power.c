@@ -65,6 +65,80 @@ struct led_data {
     sd_bus_slot *services_watch;
 };
 
+enum {
+    BLUEZ_ADAPTER_INTERFACE,
+    BLUEZ_DEVICE_INTERFACE,
+    BLUEZ_GATT_SERVICE_INTERFACE,
+};
+
+static void
+bluez_adapter_appeared(void *data, const char *path)
+{
+
+}
+
+static void
+bluez_device_appeared(void *data, const char *path)
+{
+
+}
+
+static void
+bluez_gatt_service_appeared(void *data, const char *path)
+{
+
+}
+
+static const sol_bus_interfaces bluez_interfaces[] = {
+    [BLUEZ_ADAPTER_INTERFACE] = {
+        .name = "org.bluez.Adapter1",
+        .appeared = bluez_adapter_appeared,
+    },
+    [BLUEZ_DEVICE_INTERFACE] = {
+        .name = "org.bluez.Device1",
+        .appeared = bluez_device_appeared,
+    },
+    [BLUEZ_GATT_SERVICE_INTERFACE] = {
+        .name = "org.bluez.GattService1",
+        .appeared = bluez_gatt_service_appeared,
+    },
+    { }
+};
+
+enum {
+    BLUEZ_DEVICE_ADDRESS_PROPERTY,
+    BLUEZ_DEVICE_GATT_SERVICES_PROPERTY,
+};
+
+static void
+bluez_device_address_property_set(void *data, sd_bus_message *m)
+{
+
+}
+
+static void
+bluez_device_gatt_services_property_set(void *data, sd_bus_message *m)
+{
+
+}
+
+static const sol_bus_properties device_properties[] = {
+    [BLUEZ_DEVICE_ADDRESS_PROPERTY] = {
+        .name = "Address",
+        .set = bluez_device_address_property_set,
+    },
+    [BLUEZ_DEVICE_GATT_SERVICES_PROPERTY] = {
+        .name = "GattServices",
+        .set = bluez_device_gatt_services_property_set,
+    },
+    { }
+};
+
+enum {
+    BLUEZ_SERVICE_UUID_PROPERTY,
+}
+
+
 static int
 flower_power_sensor_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)

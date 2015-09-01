@@ -117,7 +117,6 @@ _manager_properties_changed(void *data, uint64_t mask)
 static const struct sol_bus_properties _manager_properties[] = {
     [MANAGER_PROPERTY_SYSTEM_STATE] = {
         .member = "SystemState",
-        .type = 's',
         .set = _manager_set_system_state,
     },
     { }
@@ -255,7 +254,6 @@ _service_properties_changed(void *data, uint64_t mask)
 static const struct sol_bus_properties _service_properties[] = {
     [SERVICE_PROPERTY_STATE] = {
         .member = "ActiveState",
-        .type = 's',
         .set = _service_set_state,
     },
     { }

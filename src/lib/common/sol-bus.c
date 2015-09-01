@@ -435,11 +435,7 @@ _message_map_all_properties(sd_bus_message *m,
         }
 
         if (iter->member) {
-            char contents[] = { iter->type, '\0'  };
             bool changed;
-
-            r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, contents);
-            SOL_INT_CHECK_GOTO(r, < 0, end);
 
             changed = iter->set((void *)t->data, m);
             if (changed)

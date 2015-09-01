@@ -1,4 +1,3 @@
 config FLOW_NODE_TYPE_BLUEZ
 	tristate "Node type: bluez"
-	depends on FLOW
 	default m

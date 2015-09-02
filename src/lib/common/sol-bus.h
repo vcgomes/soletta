@@ -70,7 +70,7 @@ int sol_bus_client_set_disconnect_handler(struct sol_bus_client *client,
 int sol_bus_map_cached_properties(struct sol_bus_client *client,
     const char *path, const char *iface,
     const struct sol_bus_properties property_table[],
-    void (*changed)(void *data, uint64_t mask),
+    void (*changed)(void *data, const char *path, uint64_t mask),
     const void *data);
 
 int sol_bus_unmap_cached_properties(struct sol_bus_client *client,

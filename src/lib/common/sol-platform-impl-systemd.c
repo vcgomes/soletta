@@ -86,6 +86,9 @@ _manager_set_system_state(void *data, sd_bus_message *m)
     };
     int r;
 
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
+    SOL_INT_CHECK(r, < 0, false);
+
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &str);
     SOL_INT_CHECK(r, < 0, false);
 
@@ -93,6 +96,9 @@ _manager_set_system_state(void *data, sd_bus_message *m)
         SOL_PLATFORM_SERVICE_STATE_UNKNOWN);
     changed = state != ctx->properties.system_state;
     ctx->properties.system_state = state;
+
+    r = sd_bus_message_exit_container(m);
+    SOL_INT_CHECK(r, < 0, false);
 
     return changed;
 }
@@ -102,7 +108,7 @@ enum {
 };
 
 static void
-_manager_properties_changed(void *data, uint64_t mask)
+_manager_properties_changed(void *data, const char *path, uint64_t mask)
 {
     struct ctx *ctx = data;
 
@@ -222,6 +228,9 @@ _service_set_state(void *data, sd_bus_message *m)
     };
     int r;
 
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
+    SOL_INT_CHECK(r, < 0, false);
+
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &str);
     SOL_INT_CHECK(r, < 0, false);
 
@@ -229,6 +238,9 @@ _service_set_state(void *data, sd_bus_message *m)
         SOL_PLATFORM_SERVICE_STATE_UNKNOWN);
     changed = state != x->properties.state;
     x->properties.state = state;
+
+    r = sd_bus_message_exit_container(m);
+    SOL_INT_CHECK(r, < 0, false);
 
     return changed;
 }
@@ -238,7 +250,7 @@ enum {
 };
 
 static void
-_service_properties_changed(void *data, uint64_t mask)
+_service_properties_changed(void *data, const char *path, uint64_t mask)
 {
     struct service *x = data;
 

@@ -46,21 +46,21 @@
 
 #define SERVICE_NAME_OWNER_MATCH "sender='org.freedesktop.DBus',"   \
     "type='signal',"                                                \
+    "sender='org.freedesktop.DBus',"                                \
     "interface='org.freedesktop.DBus',"                             \
     "member='NameOwnerChanged',"                                    \
     "path='/org/freedesktop/DBus',"                                 \
     "arg0='%s'"
 
-#define INTERFACES_ADDED_MATCH "sender='org.freedesktop.DBus'," \
-    "type='signal',"                                            \
-    "name='%s',"                                                \
+#define INTERFACES_ADDED_MATCH     "type='signal',"             \
+    "sender='%s',"                                              \
     "interface='org.freedesktop.DBus.ObjectManager',"           \
     "member='InterfacesAdded'"
 
 struct property_table {
     const struct sol_bus_properties *properties;
     const void *data;
-    void (*changed)(void *data, uint64_t mask);
+    void (*changed)(void *data, const char *path, uint64_t mask);
     sd_bus_slot *getall_slot;
     char *iface;
     char *path;
@@ -365,7 +365,7 @@ sol_bus_client_new(sd_bus *bus, const char *service)
     SOL_NULL_CHECK(client, NULL);
 
     client->bus = sd_bus_ref(bus);
-    client->service = strdupa(service);
+    client->service = strdup(service);
 
     SOL_NULL_CHECK_GOTO(client->service, fail);
 
@@ -413,6 +413,8 @@ _message_map_all_properties(sd_bus_message *m,
     uint64_t mask = 0;
     int r;
 
+    SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
+
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sv}");
     SOL_INT_CHECK(r, < 0, r);
 
@@ -451,7 +453,7 @@ _message_map_all_properties(sd_bus_message *m,
 
 end:
     if (mask > 0)
-        t->changed((void *)t->data, mask);
+        t->changed((void *)t->data, t->path, mask);
 
     if (r == 0)
         r = sd_bus_message_exit_container(m);
@@ -499,7 +501,7 @@ int
 sol_bus_map_cached_properties(struct sol_bus_client *client,
     const char *path, const char *iface,
     const struct sol_bus_properties property_table[],
-    void (*changed)(void *data, uint64_t mask),
+    void (*changed)(void *data, const char *path, uint64_t mask),
     const void *data)
 {
     sd_bus_message *m = NULL;
@@ -654,9 +656,13 @@ filter_device_properties(sd_bus_message *m, const char *iface, const char *path,
 {
     const struct property_table *t;
 
+    SOL_DBG("client %p iface %s path %s", client, iface, path);
+
     t = find_property_table(client, iface, path);
-    if (!t)
+    if (!t) {
+        sd_bus_message_skip(m, "a{sv}");
         return;
+    }
 
     _message_map_all_properties(m, t, ret_error);
 }
@@ -666,27 +672,42 @@ filter_interfaces(struct sol_bus_client *client, sd_bus_message *m, sd_bus_error
 {
     const char *path;
 
+    SOL_DBG("client %p sig %s", client, sd_bus_message_get_signature(m, false));
+
     if (sd_bus_message_read(m, "o", &path) < 0)
         return;
 
+    SOL_DBG("path %s sig %s", path, sd_bus_message_get_signature(m, false));
+
     if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
         return;
+
+    SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
 
     do {
         const struct sol_bus_interfaces *s;
         const char *iface;
 
+        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
+
         if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
             break;
 
+        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
+
         if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
             return;
+
+        SOL_DBG("iface %s", iface);
 
         s = find_interface(client, iface);
         if (s && s->appeared)
             s->appeared((void *)client->interfaces_data, path);
 
         filter_device_properties(m, iface, path, client, ret_error);
+
+        if (sd_bus_message_exit_container(m) < 0)
+            return;
 
     } while (1);
 }
@@ -708,19 +729,39 @@ static int
 managed_objects_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
     struct sol_bus_client *client = userdata;
-
-    if (ret_error)
-        return -EINVAL;
-
-    if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{oa{sa{sv}}}") < 0)
-        return -EINVAL;
+    int err;
 
 
-    while (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "oa{sa{sv}}") > 0) {
-        filter_interfaces(client, m, ret_error);
+    if (sol_bus_log_callback(m, userdata, ret_error)) {
+        err = -EINVAL;
+        goto end;
     }
 
-    return 0;
+    if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{oa{sa{sv}}}") < 0) {
+        err = -EINVAL;
+        goto end;
+    }
+
+    while (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "oa{sa{sv}}") > 0) {
+
+        filter_interfaces(client, m, ret_error);
+
+        if (sd_bus_message_exit_container(m) < 0) {
+            err = -EINVAL;
+            goto end;
+        }
+    }
+
+    if (sd_bus_message_exit_container(m) < 0) {
+        err = -EINVAL;
+        goto end;
+    }
+
+    err = 0;
+
+end:
+    client->managed_objects = sd_bus_slot_unref(client->managed_objects);
+    return err;
 }
 
 int
@@ -766,13 +807,15 @@ sol_bus_watch_interfaces(struct sol_bus_client *client,
         m, managed_objects_cb, client, 0);
     SOL_INT_CHECK_GOTO(r, < 0, error_call);
 
+    sd_bus_message_unref(m);
+
     return 0;
 
 error_call:
     sd_bus_message_unref(m);
 
 error_message:
-    sd_bus_slot_unref(client->interfaces_added);
+    client->interfaces_added = sd_bus_slot_unref(client->interfaces_added);
 
     return -EINVAL;
 }

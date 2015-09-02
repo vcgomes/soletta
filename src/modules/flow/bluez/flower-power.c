@@ -55,21 +55,34 @@
     "path='%s',"                                                        \
     "arg0='org.bluez.Device1',"
 
-struct sensor_data {
+struct service {
+    char *uuid;
+    char *path;
+};
+
+struct pending_device {
     char *remote;
+    char *path;
+    struct sol_vector services;
+};
+
+struct sensor_data {
+    char *address;
 };
 
 struct led_data {
-    char *remote;
+    char *address;
 };
 
 static struct context {
     struct sol_bus_client *client;
-    struct sol_ptr_vector sensors;
+    struct sol_vector pending_devices; /* Devices without complete information */
     struct sol_ptr_vector leds;
+    struct sol_ptr_vector sensors;
 } context =  {
-    .sensors = SOL_PTR_VECTOR_INIT,
+    .pending_devices = SOL_VECTOR_INIT(struct pending_device),
     .leds = SOL_PTR_VECTOR_INIT,
+    .sensors = SOL_PTR_VECTOR_INIT,
 };
 
 enum {
@@ -77,27 +90,22 @@ enum {
     BLUEZ_GATT_SERVICE_INTERFACE,
 };
 
-static void
-bluez_device_property_changed(void *data, uint64_t mask)
-{
+enum {
+    BLUEZ_DEVICE_ADDRESS_PROPERTY,
+    BLUEZ_DEVICE_GATT_SERVICES_PROPERTY,
+};
 
-}
+enum {
+    BLUEZ_SERVICE_UUID_PROPERTY,
+    BLUEZ_SERVICE_CHARACTERISTICS_PROPERTY,
+};
 
-static void
-bluez_device_appeared(void *data, const char *path)
-{
-    struct context *c = data;
-    int r;
-
-    r = sol_bus_map_cached_properties(c->client, path, "org.bluez.Device1", device_properties,
-
-}
-
-static void
-bluez_gatt_service_appeared(void *data, const char *path)
-{
-
-}
+static void bluez_device_appeared(void *data, const char *path);
+static void bluez_gatt_service_appeared(void *data, const char *path);
+static bool bluez_device_address_property_set(void *data, sd_bus_message *m);
+static bool bluez_device_gatt_services_property_set(void *data, sd_bus_message *m);
+static bool bluez_service_uuid_property_set(void *data, sd_bus_message *m);
+static bool bluez_service_characteristics_property_set(void *data, sd_bus_message *m);
 
 static const struct sol_bus_interfaces bluez_interfaces[] = {
     [BLUEZ_DEVICE_INTERFACE] = {
@@ -111,23 +119,6 @@ static const struct sol_bus_interfaces bluez_interfaces[] = {
     { }
 };
 
-enum {
-    BLUEZ_DEVICE_ADDRESS_PROPERTY,
-    BLUEZ_DEVICE_GATT_SERVICES_PROPERTY,
-};
-
-static bool
-bluez_device_address_property_set(void *data, sd_bus_message *m)
-{
-    return false;
-}
-
-static bool
-bluez_device_gatt_services_property_set(void *data, sd_bus_message *m)
-{
-    return false;
-}
-
 static const struct sol_bus_properties device_properties[] = {
     [BLUEZ_DEVICE_ADDRESS_PROPERTY] = {
         .member = "Address",
@@ -140,10 +131,204 @@ static const struct sol_bus_properties device_properties[] = {
     { }
 };
 
-enum {
-    BLUEZ_SERVICE_UUID_PROPERTY,
-    BLUEZ_SERVICE_CHARACTERISTICS_PROPERTY,
+static const struct sol_bus_properties service_properties[] = {
+    [BLUEZ_SERVICE_UUID_PROPERTY] = {
+        .member = "UUID",
+        .set = bluez_service_uuid_property_set,
+    },
+    [BLUEZ_SERVICE_CHARACTERISTICS_PROPERTY] = {
+        .member = "Characteristics",
+        .set = bluez_service_characteristics_property_set,
+    },
+    { }
 };
+
+static void
+bluez_device_property_changed(void *data, const char *path, uint64_t mask)
+{
+    if (mask & (1 << BLUEZ_DEVICE_ADDRESS_PROPERTY)) {
+
+    }
+
+    if (mask & (1 << BLUEZ_DEVICE_GATT_SERVICES_PROPERTY)) {
+
+    }
+}
+
+static void
+bluez_device_appeared(void *data, const char *path)
+{
+    struct context *c = data;
+
+    SOL_DBG("context %p path %s", c, path);
+
+    sol_bus_map_cached_properties(c->client, path, "org.bluez.Device1",
+        device_properties, bluez_device_property_changed, c);
+}
+
+static void
+bluez_gatt_service_appeared(void *data, const char *path)
+{
+
+}
+
+static struct pending_device *
+find_pending_device_by_address(struct context *c, const char *address)
+{
+    struct pending_device *p;
+    uint16_t i;
+
+    SOL_VECTOR_FOREACH_IDX (&c->pending_devices, p, i) {
+        if (streq(p->remote, address))
+            return p;
+    }
+    return NULL;
+}
+
+static struct pending_device *
+find_pending_device_by_path(struct context *c, const char *path)
+{
+    struct pending_device *p;
+    uint16_t i;
+
+    SOL_VECTOR_FOREACH_IDX (&c->pending_devices, p, i) {
+        if (streq(p->path, path))
+            return p;
+    }
+    return NULL;
+}
+
+static struct led_data *
+find_led_by_address(struct context *c, const char *address)
+{
+    struct led_data *l;
+    uint16_t i;
+
+    SOL_PTR_VECTOR_FOREACH_IDX (&c->leds, l, i) {
+        if (streq(l->address, address))
+            return l;
+    }
+    return NULL;
+}
+
+static struct sensor_data *
+find_sensor_by_address(struct context *c, const char *address)
+{
+    struct sensor_data *s;
+    uint16_t i;
+
+    SOL_PTR_VECTOR_FOREACH_IDX (&c->sensors, s, i) {
+        if (streq(s->address, address))
+            return s;
+    }
+    return NULL;
+}
+
+static bool
+bluez_device_address_property_set(void *data, sd_bus_message *m)
+{
+    struct context *c = data;
+    struct pending_device *p;
+    struct sensor_data *s;
+    struct led_data *l;
+    const char *address, *path;
+    int r;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &address);
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    SOL_DBG("context %p address %s", c, address);
+
+    s = find_sensor_by_address(c, address);
+    l = find_led_by_address(c, address);
+
+    SOL_DBG("led %p sensor %p", l, s);
+
+    if (!l && !s)
+        goto error;
+
+    path = sd_bus_message_get_path(m);
+
+    p = find_pending_device_by_path(c, path);
+
+    SOL_DBG("pending %p path %s", p, path);
+
+    if (p)
+        goto error;
+
+    sol_vector_init(&p->services, sizeof(struct service));
+
+    p = sol_vector_append(&c->pending_devices);
+    SOL_NULL_CHECK_GOTO(p, error);
+
+    p->remote = strdup(address);
+    SOL_NULL_CHECK_GOTO(p->remote, error_alloc);
+
+    p->path = strdup(path);
+    SOL_NULL_CHECK_GOTO(p->path, error_alloc);
+
+    sd_bus_message_exit_container(m);
+
+    return true;
+
+error_alloc:
+    free(p->remote);
+    free(p->path);
+
+    sol_vector_del(&c->pending_devices, c->pending_devices.len - 1);
+
+error:
+    sd_bus_message_exit_container(m);
+
+    return false;
+}
+
+static bool
+bluez_device_gatt_services_property_set(void *data, sd_bus_message *m)
+{
+    struct context *c = data;
+    struct pending_device *p;
+    const char *path;
+    int r;
+
+    path = sd_bus_message_get_path(m);
+
+    p = find_pending_device_by_path(c, path);
+    if (!p)
+        goto end;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ao");
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "o");
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    while (sd_bus_message_read_basic(m, SD_BUS_TYPE_OBJECT_PATH, &path) >= 0) {
+        struct service *s = sol_vector_append(&p->services);
+        SOL_NULL_CHECK_GOTO(s, end);
+
+        s->path = strdup(path);
+        if (!s->path) {
+            sol_vector_del(&p->services, p->services.len - 1);
+            goto end;
+        }
+    }
+
+    r = sd_bus_message_exit_container(m);
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_message_exit_container(m);
+    SOL_INT_CHECK(r, < 0, false);
+
+    return true;
+
+end:
+    sd_bus_message_exit_container(m);
+    return false;
+}
 
 static bool
 bluez_service_uuid_property_set(void *data, sd_bus_message *m)
@@ -156,18 +341,6 @@ bluez_service_characteristics_property_set(void *data, sd_bus_message *m)
 {
     return false;
 }
-
-static const struct sol_bus_properties service_properties[] = {
-    [BLUEZ_SERVICE_UUID_PROPERTY] = {
-        .member = "UUID",
-        .set = bluez_service_uuid_property_set,
-    },
-    [BLUEZ_SERVICE_CHARACTERISTICS_PROPERTY] = {
-        .member = "Characteristics",
-        .set = bluez_service_characteristics_property_set,
-    },
-    { }
-};
 
 static int
 flower_power_sensor_open(struct sol_flow_node *node, void *data,
@@ -201,7 +374,9 @@ flower_power_led_open(struct sol_flow_node *node, void *data,
         (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
     int r;
 
-    led->remote = strdup(opts->address);
+    led->address = strdup(opts->address);
+
+    SOL_DBG("led %p address %s", led,  led->address);
 
     if (!context.client) {
         context.client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");

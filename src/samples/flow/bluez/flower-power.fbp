@@ -1,0 +1,4 @@
+timer(timer:interval=1000)
+led(Led)
+
+timer OUT -> IN toggle(boolean/toggle) OUT -> IN led

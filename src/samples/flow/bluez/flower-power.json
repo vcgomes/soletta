@@ -4,7 +4,7 @@
   {
    "name": "Led",
    "options": {
-    "address": "08:00:27:ab:45:32"
+    "address": "60:BE:B5:AC:27:00"
    },
    "type": "bluez/flower-power-led"
   }

@@ -240,29 +240,24 @@ bluez_device_address_property_set(void *data, sd_bus_message *m)
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &address);
     SOL_INT_CHECK_GOTO(r, < 0, error);
 
-    SOL_DBG("context %p address %s", c, address);
-
     s = find_sensor_by_address(c, address);
     l = find_led_by_address(c, address);
-
-    SOL_DBG("led %p sensor %p", l, s);
 
     if (!l && !s)
         goto error;
 
     path = sd_bus_message_get_path(m);
 
+    SOL_DBG("path %s", path);
+
     p = find_pending_device_by_path(c, path);
-
-    SOL_DBG("pending %p path %s", p, path);
-
     if (p)
         goto error;
 
-    sol_vector_init(&p->services, sizeof(struct service));
-
     p = sol_vector_append(&c->pending_devices);
     SOL_NULL_CHECK_GOTO(p, error);
+
+    sol_vector_init(&p->services, sizeof(struct service));
 
     p->remote = strdup(address);
     SOL_NULL_CHECK_GOTO(p->remote, error_alloc);

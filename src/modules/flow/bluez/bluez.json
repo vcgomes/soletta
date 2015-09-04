@@ -52,30 +52,9 @@
           "name": "SOIL_VWC"
         }
       ],
-      "private_data_type": "sensor_data",
-      "url": "http://solettaproject.org/doc/latest/node_types/bluez/flower-power-sensor.html"
-    },
-    {
-      "category": "output/hw",
-      "description": "Controls the Flower Power LED",
-      "methods": {
-        "close": "flower_power_led_close",
-        "open": "flower_power_led_open"
-      },
-      "name": "bluez/flower-power-led",
-      "options": {
-        "members": [
-          {
-            "name": "address",
-            "data_type": "string",
-            "description": "Bluetooth Address"
-          }
-        ],
-        "version": 1
-      },
       "in_ports": [
         {
-          "data_type": "any",
+          "data_type": "boolean",
           "description": "FIXME",
           "name": "IN",
           "methods": {
@@ -83,8 +62,8 @@
           }
         }
       ],
-      "private_data_type": "led_data",
-      "url": "http://solettaproject.org/doc/latest/node_types/bluez/flower-power-led.html"
+      "private_data_type": "flower_power_data",
+      "url": "http://solettaproject.org/doc/latest/node_types/bluez/flower-power-sensor.html"
     }
   ]
 }

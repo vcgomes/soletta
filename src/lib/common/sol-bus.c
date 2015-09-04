@@ -77,7 +77,7 @@ struct ctx {
 struct sol_bus_client {
     sd_bus *bus;
     const char *service;
-    struct sol_vector property_tables;
+    struct sol_ptr_vector property_tables;
     const struct sol_bus_interfaces *interfaces;
     const void *interfaces_data;
     sd_bus_slot *name_changed;
@@ -301,6 +301,9 @@ static void
 destroy_property_table(struct property_table *table)
 {
     sd_bus_slot_unref(table->getall_slot);
+    free(table->path);
+    free(table->iface);
+    free(table);
 }
 
 static void
@@ -309,10 +312,10 @@ destroy_client(struct sol_bus_client *client)
     struct property_table *t;
     uint16_t i;
 
-    SOL_VECTOR_FOREACH_IDX (&client->property_tables, t, i) {
+    SOL_PTR_VECTOR_FOREACH_IDX (&client->property_tables, t, i) {
         destroy_property_table(t);
     }
-    sol_vector_clear(&client->property_tables);
+    sol_ptr_vector_clear(&client->property_tables);
 
     sd_bus_slot_unref(client->name_changed);
     sd_bus_slot_unref(client->managed_objects);
@@ -369,7 +372,7 @@ sol_bus_client_new(sd_bus *bus, const char *service)
 
     SOL_NULL_CHECK_GOTO(client->service, fail);
 
-    sol_vector_init(&client->property_tables, sizeof(struct property_table));
+    sol_ptr_vector_init(&client->property_tables);
 
     r = sol_ptr_vector_append(&_ctx.clients, client);
     SOL_INT_CHECK_GOTO(r, < 0, fail);
@@ -413,8 +416,6 @@ _message_map_all_properties(sd_bus_message *m,
     uint64_t mask = 0;
     int r;
 
-    SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
-
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sv}");
     SOL_INT_CHECK(r, < 0, r);
 
@@ -439,7 +440,7 @@ _message_map_all_properties(sd_bus_message *m,
         if (iter->member) {
             bool changed;
 
-            changed = iter->set((void *)t->data, m);
+            changed = iter->set((void *)t->data, t->path, m);
             if (changed)
                 mask |= 1 << (iter - t->properties);
         } else {
@@ -519,14 +520,14 @@ sol_bus_map_cached_properties(struct sol_bus_client *client,
 
     SOL_INT_CHECK(iter_desc - property_table, >= (int)sizeof(uint64_t) * CHAR_BIT, -ENOBUFS);
 
-    t = sol_vector_append(&client->property_tables);
+    t = calloc(1, sizeof(*t));
     SOL_NULL_CHECK(t, -ENOMEM);
 
     t->iface = strdup(iface);
-    SOL_NULL_CHECK_GOTO(t->iface, fail_dup);
+    SOL_NULL_CHECK_GOTO(t->iface, fail);
 
     t->path = strdup(path);
-    SOL_NULL_CHECK_GOTO(t->path, fail_dup);
+    SOL_NULL_CHECK_GOTO(t->path, fail);
 
     t->properties = property_table;
     t->data = data;
@@ -543,8 +544,11 @@ sol_bus_map_cached_properties(struct sol_bus_client *client,
 
         r = sd_bus_add_match(client->bus, &client->properties_changed, matchstr,
             _match_properties_changed, t);
-        SOL_INT_CHECK_GOTO(r, < 0, fail_match);
+        SOL_INT_CHECK_GOTO(r, < 0, fail);
     }
+
+    r = sol_ptr_vector_append(&client->property_tables, t);
+    SOL_INT_CHECK_GOTO(r, < 0, fail);
 
     /* When GetManagedObjects return we will have info about all the properties. */
     if (client->managed_objects)
@@ -566,14 +570,12 @@ sol_bus_map_cached_properties(struct sol_bus_client *client,
 
 fail_getall:
     sd_bus_message_unref(m);
-    sd_bus_slot_unref(client->properties_changed);
-fail_match:
-    sol_vector_del(&client->property_tables,
-        client->property_tables.len - 1);
 
-fail_dup:
-    free(t->iface);
-    free(t->path);
+    sol_ptr_vector_del(&client->property_tables,
+        sol_ptr_vector_get_len(&client->property_tables) - 1);
+
+fail:
+    destroy_property_table(t);
 
     return r;
 }
@@ -586,7 +588,7 @@ sol_bus_unmap_cached_properties(struct sol_bus_client *client,
     struct property_table *t, *found = NULL;
     uint16_t i;
 
-    SOL_VECTOR_FOREACH_IDX (&client->property_tables, t, i) {
+    SOL_PTR_VECTOR_FOREACH_IDX (&client->property_tables, t, i) {
         if (t->properties == property_table && t->data == data) {
             found = t;
             break;
@@ -594,8 +596,8 @@ sol_bus_unmap_cached_properties(struct sol_bus_client *client,
     }
     SOL_NULL_CHECK(found, -ENOENT);
 
-    sd_bus_slot_unref(found->getall_slot);
-    sol_vector_del(&client->property_tables, i);
+    sol_ptr_vector_del(&client->property_tables, i);
+    destroy_property_table(found);
 
     return 0;
 }
@@ -642,7 +644,7 @@ find_property_table(struct sol_bus_client *client,
     struct property_table *t;
     uint16_t i;
 
-    SOL_VECTOR_FOREACH_IDX (&client->property_tables, t, i) {
+    SOL_PTR_VECTOR_FOREACH_IDX (&client->property_tables, t, i) {
         if (streq(t->iface, iface) && streq(t->path, path))
             return t;
     }
@@ -655,8 +657,6 @@ filter_device_properties(sd_bus_message *m, const char *iface, const char *path,
     struct sol_bus_client *client, sd_bus_error *ret_error)
 {
     const struct property_table *t;
-
-    SOL_DBG("client %p iface %s path %s", client, iface, path);
 
     t = find_property_table(client, iface, path);
     if (!t) {
@@ -672,33 +672,21 @@ filter_interfaces(struct sol_bus_client *client, sd_bus_message *m, sd_bus_error
 {
     const char *path;
 
-    SOL_DBG("client %p sig %s", client, sd_bus_message_get_signature(m, false));
-
     if (sd_bus_message_read(m, "o", &path) < 0)
         return;
 
-    SOL_DBG("path %s sig %s", path, sd_bus_message_get_signature(m, false));
-
     if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
         return;
-
-    SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
 
     do {
         const struct sol_bus_interfaces *s;
         const char *iface;
 
-        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
-
         if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
             break;
 
-        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
-
         if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
             return;
-
-        SOL_DBG("iface %s", iface);
 
         s = find_interface(client, iface);
         if (s && s->appeared)

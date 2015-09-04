@@ -37,7 +37,7 @@
 
 struct sol_bus_properties {
     const char *member;
-    bool (*set)(void *data, sd_bus_message *m);
+    bool (*set)(void *data, const char *path, sd_bus_message *m);
 };
 
 struct sol_bus_interfaces {

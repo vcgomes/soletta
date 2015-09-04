@@ -67,7 +67,7 @@ struct ctx {
 static struct ctx _ctx;
 
 static bool
-_manager_set_system_state(void *data, sd_bus_message *m)
+_manager_set_system_state(void *data, const char *path, sd_bus_message *m)
 {
     struct ctx *ctx = data;
     const char *str;
@@ -211,7 +211,7 @@ sol_platform_impl_get_state(void)
 }
 
 static bool
-_service_set_state(void *data, sd_bus_message *m)
+_service_set_state(void *data, const char *path, sd_bus_message *m)
 {
     struct service *x = data;
     const char *str;

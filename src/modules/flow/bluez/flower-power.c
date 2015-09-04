@@ -66,23 +66,24 @@ struct pending_device {
     struct sol_vector services;
 };
 
-struct sensor_data {
+struct flower_power_data {
+    const char *uuid;
     char *address;
-};
-
-struct led_data {
-    char *address;
+    char *path;
+    char *light_sensor_path;
+    char *soil_ec_path;
+    char *soil_temp;
+    char *air_temp;
+    char *led_path;
 };
 
 static struct context {
     struct sol_bus_client *client;
     struct sol_vector pending_devices; /* Devices without complete information */
-    struct sol_ptr_vector leds;
-    struct sol_ptr_vector sensors;
+    struct sol_ptr_vector flowers;
 } context =  {
     .pending_devices = SOL_VECTOR_INIT(struct pending_device),
-    .leds = SOL_PTR_VECTOR_INIT,
-    .sensors = SOL_PTR_VECTOR_INIT,
+    .flowers = SOL_PTR_VECTOR_INIT,
 };
 
 enum {
@@ -102,10 +103,10 @@ enum {
 
 static void bluez_device_appeared(void *data, const char *path);
 static void bluez_gatt_service_appeared(void *data, const char *path);
-static bool bluez_device_address_property_set(void *data, sd_bus_message *m);
-static bool bluez_device_gatt_services_property_set(void *data, sd_bus_message *m);
-static bool bluez_service_uuid_property_set(void *data, sd_bus_message *m);
-static bool bluez_service_characteristics_property_set(void *data, sd_bus_message *m);
+static bool bluez_device_address_property_set(void *data, const char *path, sd_bus_message *m);
+static bool bluez_device_gatt_services_property_set(void *data, const char *path, sd_bus_message *m);
+static bool bluez_service_uuid_property_set(void *data, const char *path, sd_bus_message *m);
+static bool bluez_service_characteristics_property_set(void *data, const char *path, sd_bus_message *m);
 
 static const struct sol_bus_interfaces bluez_interfaces[] = {
     [BLUEZ_DEVICE_INTERFACE] = {
@@ -144,14 +145,33 @@ static const struct sol_bus_properties service_properties[] = {
 };
 
 static void
+bluez_gatt_service_property_changed(void *data, const char *path, uint64_t mask)
+{
+
+}
+
+static void
 bluez_device_property_changed(void *data, const char *path, uint64_t mask)
 {
-    if (mask & (1 << BLUEZ_DEVICE_ADDRESS_PROPERTY)) {
+    struct context *c = data;
+    struct pending_device *p;
+    uint16_t i;
 
-    }
+    if (!(mask & (1 << BLUEZ_DEVICE_GATT_SERVICES_PROPERTY)))
+        return;
 
-    if (mask & (1 << BLUEZ_DEVICE_GATT_SERVICES_PROPERTY)) {
+    SOL_VECTOR_FOREACH_IDX (&c->pending_devices, p, i) {
+        struct service *s;
+        uint16_t j;
 
+        if (p->services.len == 0)
+            continue;
+
+        SOL_VECTOR_FOREACH_IDX (&p->services, s, j) {
+            sol_bus_map_cached_properties(c->client, s->path,
+                "org.bluez.GattService1", service_properties,
+                bluez_gatt_service_property_changed, p);
+        }
     }
 }
 
@@ -198,40 +218,26 @@ find_pending_device_by_path(struct context *c, const char *path)
     return NULL;
 }
 
-static struct led_data *
-find_led_by_address(struct context *c, const char *address)
+static struct flower_power_data *
+find_flower_by_address(struct context *c, const char *address)
 {
-    struct led_data *l;
+    struct flower_power_data *f;
     uint16_t i;
 
-    SOL_PTR_VECTOR_FOREACH_IDX (&c->leds, l, i) {
-        if (streq(l->address, address))
-            return l;
-    }
-    return NULL;
-}
-
-static struct sensor_data *
-find_sensor_by_address(struct context *c, const char *address)
-{
-    struct sensor_data *s;
-    uint16_t i;
-
-    SOL_PTR_VECTOR_FOREACH_IDX (&c->sensors, s, i) {
-        if (streq(s->address, address))
-            return s;
+    SOL_PTR_VECTOR_FOREACH_IDX (&c->flowers, f, i) {
+        if (streq(f->address, address))
+            return f;
     }
     return NULL;
 }
 
 static bool
-bluez_device_address_property_set(void *data, sd_bus_message *m)
+bluez_device_address_property_set(void *data, const char *path, sd_bus_message *m)
 {
     struct context *c = data;
     struct pending_device *p;
-    struct sensor_data *s;
-    struct led_data *l;
-    const char *address, *path;
+    struct flower_power_data *f;
+    const char *address;
     int r;
 
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
@@ -240,19 +246,15 @@ bluez_device_address_property_set(void *data, sd_bus_message *m)
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &address);
     SOL_INT_CHECK_GOTO(r, < 0, error);
 
-    s = find_sensor_by_address(c, address);
-    l = find_led_by_address(c, address);
-
-    if (!l && !s)
+    f = find_flower_by_address(c, address);
+    if (!f)
         goto error;
-
-    path = sd_bus_message_get_path(m);
-
-    SOL_DBG("path %s", path);
 
     p = find_pending_device_by_path(c, path);
     if (p)
         goto error;
+
+    SOL_DBG("pending path %s address %s", path, address);
 
     p = sol_vector_append(&c->pending_devices);
     SOL_NULL_CHECK_GOTO(p, error);
@@ -282,14 +284,11 @@ error:
 }
 
 static bool
-bluez_device_gatt_services_property_set(void *data, sd_bus_message *m)
+bluez_device_gatt_services_property_set(void *data, const char *path, sd_bus_message *m)
 {
     struct context *c = data;
     struct pending_device *p;
-    const char *path;
     int r;
-
-    path = sd_bus_message_get_path(m);
 
     p = find_pending_device_by_path(c, path);
     if (!p)
@@ -326,13 +325,29 @@ end:
 }
 
 static bool
-bluez_service_uuid_property_set(void *data, sd_bus_message *m)
+bluez_service_uuid_property_set(void *data, const char *path, sd_bus_message *m)
 {
+    struct pending_device *p = data;
+    const char *uuid;
+    int r;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &uuid);
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+
+    return true;
+
+end:
+    sd_bus_message_exit_container(m);
+
     return false;
 }
 
 static bool
-bluez_service_characteristics_property_set(void *data, sd_bus_message *m)
+bluez_service_characteristics_property_set(void *data, const char *path, sd_bus_message *m)
 {
     return false;
 }
@@ -341,7 +356,35 @@ static int
 flower_power_sensor_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
 {
-    return -ENOSYS;
+    static const char *uuid = "39E1FA00-84A8-11E2-AFBA-0002A5D5C51B";
+    struct flower_power_data *flower = data;
+    struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
+        (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
+    int r;
+
+    flower->address = strdup(opts->address);
+    flower->uuid = uuid;
+
+    SOL_DBG("flower %p address %s", flower,  flower->address);
+
+    if (!context.client) {
+        context.client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");
+        SOL_NULL_CHECK(context.client, -ENOMEM);
+    }
+
+    r = sol_ptr_vector_append(&context.flowers, flower);
+    SOL_INT_CHECK(r, < 0, -ENOMEM);
+
+    r = sol_bus_watch_interfaces(context.client, bluez_interfaces, &context);
+    SOL_INT_CHECK_GOTO(r, < 0, error_watch);
+
+    return 0;
+
+error_watch:
+    sol_ptr_vector_del(&context.flowers,
+        sol_ptr_vector_get_len(&context.flowers) - 1);
+
+    return -EINVAL;
 }
 
 static void
@@ -358,45 +401,6 @@ flower_power_led_in_process(struct sol_flow_node *node,
     const struct sol_flow_packet *packet)
 {
     return -ENOSYS;
-}
-
-static int
-flower_power_led_open(struct sol_flow_node *node, void *data,
-    const struct sol_flow_node_options *options)
-{
-    struct led_data *led = data;
-    struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
-        (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
-    int r;
-
-    led->address = strdup(opts->address);
-
-    SOL_DBG("led %p address %s", led,  led->address);
-
-    if (!context.client) {
-        context.client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");
-        SOL_NULL_CHECK(context.client, -ENOMEM);
-    }
-
-    r = sol_ptr_vector_append(&context.leds, led);
-    SOL_INT_CHECK(r, < 0, -ENOMEM);
-
-    r = sol_bus_watch_interfaces(context.client, bluez_interfaces, &context);
-    SOL_INT_CHECK_GOTO(r, < 0, error_watch);
-
-    return 0;
-
-error_watch:
-    sol_ptr_vector_del(&context.leds,
-        sol_ptr_vector_get_len(&context.leds) - 1);
-
-    return -EINVAL;
-}
-
-static void
-flower_power_led_close(struct sol_flow_node *node, void *data)
-{
-
 }
 
 #include "bluez-gen.c"

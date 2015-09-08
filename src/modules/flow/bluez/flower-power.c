@@ -30,7 +30,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "bluez-gen.h"
+#include "sol-flow/bluez.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -45,6 +45,8 @@
 #include "sol-mainloop.h"
 #include "sol-types.h"
 #include "sol-util.h"
+#include "sol-str-table.h"
+#include "sol-flower-power.h"
 
 #include "bluez.h"
 
@@ -55,26 +57,47 @@
     "path='%s',"                                                        \
     "arg0='org.bluez.Device1',"
 
+enum characteristic_types {
+    CHAR_TYPE_LIGHT_SENSOR_VALUE,
+    CHAR_TYPE_SOIL_EC,
+    CHAR_TYPE_SOIL_TEMP,
+    CHAR_TYPE_AIR_TEMP,
+    CHAR_TYPE_SOIL_VWC,
+    CHAR_TYPE_LIVE_MEASURE_PERIOD,
+    CHAR_TYPE_LED_STATE,
+    CHAR_TYPE_SIZE,
+};
+
+static const struct sol_str_table characteristic_uuid_to_type[] = {
+    SOL_STR_TABLE_ITEM("39E1FA01-84A8-11E2-AFBA-0002A5D5C51B", CHAR_TYPE_LIGHT_SENSOR_VALUE),
+    SOL_STR_TABLE_ITEM("39E1FA02-84A8-11E2-AFBA-0002A5D5C51B", CHAR_TYPE_SOIL_EC),
+    SOL_STR_TABLE_ITEM("39E1FA03-84A8-11E2-AFBA-0002A5D5C51B", CHAR_TYPE_SOIL_TEMP),
+    SOL_STR_TABLE_ITEM("39E1FA04-84A8-11E2-AFBA-0002A5D5C51B", CHAR_TYPE_AIR_TEMP),
+    SOL_STR_TABLE_ITEM("39E1FA05-84A8-11E2-AFBA-0002A5D5C51B", CHAR_TYPE_SOIL_VWC),
+    SOL_STR_TABLE_ITEM("39E1FA06-84A8-11E2-AFBA-0002A5D5C51B", CHAR_TYPE_LIVE_MEASURE_PERIOD),
+    SOL_STR_TABLE_ITEM("39E1FA07-84A8-11E2-AFBA-0002A5D5C51B", CHAR_TYPE_LED_STATE),
+};
+
 struct service {
     char *uuid;
     char *path;
+};
+
+struct flower_power_data {
+    struct sol_bus_client *client;
+    const char *uuid;
+    char *address;
+    char *device;
+    char *service;
+    char *chr_path[CHAR_TYPE_SIZE];
+    struct sol_flower_power_data value;
 };
 
 struct pending_device {
     char *remote;
     char *path;
     struct sol_vector services;
-};
-
-struct flower_power_data {
-    const char *uuid;
-    char *address;
-    char *path;
-    char *light_sensor_path;
-    char *soil_ec_path;
-    char *soil_temp;
-    char *air_temp;
-    char *led_path;
+    struct flower_power_data *flower;
 };
 
 static struct context {
@@ -101,12 +124,19 @@ enum {
     BLUEZ_SERVICE_CHARACTERISTICS_PROPERTY,
 };
 
+enum {
+    BLUEZ_CHARACTERISTIC_UUID_PROPERTY,
+    BLUEZ_CHARACTERISTIC_VALUE_PROPERTY,
+};
+
 static void bluez_device_appeared(void *data, const char *path);
 static void bluez_gatt_service_appeared(void *data, const char *path);
 static bool bluez_device_address_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_device_gatt_services_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_service_uuid_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_service_characteristics_property_set(void *data, const char *path, sd_bus_message *m);
+static bool bluez_characteristic_uuid_property_set(void *data, const char *path, sd_bus_message *m);
+static bool bluez_characteristic_value_property_set(void *data, const char *path, sd_bus_message *m);
 
 static const struct sol_bus_interfaces bluez_interfaces[] = {
     [BLUEZ_DEVICE_INTERFACE] = {
@@ -144,8 +174,26 @@ static const struct sol_bus_properties service_properties[] = {
     { }
 };
 
+static const struct sol_bus_properties characteristic_properties[] = {
+    [BLUEZ_CHARACTERISTIC_UUID_PROPERTY] = {
+        .member = "UUID",
+        .set = bluez_characteristic_uuid_property_set,
+    },
+    [BLUEZ_CHARACTERISTIC_VALUE_PROPERTY] = {
+        .member = "Value",
+        .set = bluez_characteristic_value_property_set,
+    },
+    { }
+};
+
 static void
 bluez_gatt_service_property_changed(void *data, const char *path, uint64_t mask)
+{
+
+}
+
+static void
+bluez_characteristic_property_changed(void *data, const char *path, uint64_t mask)
 {
 
 }
@@ -250,6 +298,11 @@ bluez_device_address_property_set(void *data, const char *path, sd_bus_message *
     if (!f)
         goto error;
 
+    if (!f->device) {
+        f->device = strdup(path);
+        SOL_NULL_CHECK_GOTO(f->device, error);
+    }
+
     p = find_pending_device_by_path(c, path);
     if (p)
         goto error;
@@ -258,6 +311,8 @@ bluez_device_address_property_set(void *data, const char *path, sd_bus_message *
 
     p = sol_vector_append(&c->pending_devices);
     SOL_NULL_CHECK_GOTO(p, error);
+
+    p->flower = f;
 
     sol_vector_init(&p->services, sizeof(struct service));
 
@@ -328,6 +383,7 @@ static bool
 bluez_service_uuid_property_set(void *data, const char *path, sd_bus_message *m)
 {
     struct pending_device *p = data;
+    struct flower_power_data *f = p->flower;
     const char *uuid;
     int r;
 
@@ -337,6 +393,11 @@ bluez_service_uuid_property_set(void *data, const char *path, sd_bus_message *m)
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &uuid);
     SOL_INT_CHECK_GOTO(r, < 0, end);
 
+    if (!streq(f->uuid, uuid))
+        return false;
+
+    f->service = strdup(path);
+    SOL_NULL_CHECK_GOTO(f->service, end);
 
     return true;
 
@@ -349,6 +410,124 @@ end:
 static bool
 bluez_service_characteristics_property_set(void *data, const char *path, sd_bus_message *m)
 {
+    struct pending_device *p = data;
+    struct flower_power_data *f = p->flower;
+    const char *chr_path;
+    int r;
+
+    if (!streq(f->service, path))
+        return false;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ao");
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "o");
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    while (sd_bus_message_read_basic(m, SD_BUS_TYPE_OBJECT_PATH, &chr_path) >= 0) {
+        sol_bus_map_cached_properties(f->client, chr_path, "org.bluez.GattCharacteristic1",
+            characteristic_properties, bluez_characteristic_property_changed, f);
+    }
+
+    r = sd_bus_message_exit_container(m);
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_message_exit_container(m);
+    SOL_INT_CHECK(r, < 0, false);
+
+    return true;
+
+end:
+    sd_bus_message_exit_container(m);
+    return false;
+}
+
+
+static bool
+bluez_characteristic_uuid_property_set(void *data, const char *path, sd_bus_message *m)
+{
+    struct flower_power_data *f = data;
+    const char *uuid;
+    struct sol_str_slice key;
+    enum characteristic_types type;
+    int r;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &uuid);
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    key = sol_str_slice_from_str(uuid);
+
+    type = sol_str_table_lookup_fallback(characteristic_uuid_to_type, key, CHAR_TYPE_SIZE);
+    if (type == CHAR_TYPE_SIZE)
+        return false;
+
+    f->chr_path[type] = strdup(path);
+    SOL_NULL_CHECK_GOTO(f->chr_path[type], error);
+
+    return true;
+
+error:
+    sd_bus_message_exit_container(m);
+
+    return false;
+}
+
+static bool packet_set_value(struct sol_flower_power_data *packet,
+    enum characteristic_types type, const uint8_t value[], size_t len)
+{
+    uint16_t d;
+    double info;
+
+    if (type == CHAR_TYPE_SIZE ||
+        type == CHAR_TYPE_LED_STATE ||
+        type == CHAR_TYPE_LIVE_MEASURE_PERIOD)
+        return false;
+
+    if (len < 2)
+        return false;
+
+    d = (uint16_t) value[0] << 8 || value[1];
+    info = (double) (d * 3.3) / ((1 << 11) - 1)
+
+    switch (type) {
+        case CHAR_TYPE_LI
+    };
+}
+
+static bool
+bluez_characteristic_value_property_set(void *data, const char *path, sd_bus_message *m)
+{
+    struct flower_power_data *f = data;
+    uint8_t *value;
+    size_t len;
+    int type, r;
+    bool found = false;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ay");
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    for (type = 0; type < CHAR_TYPE_SIZE; type++) {
+        if (streq(path, f->chr_path[type])) {
+            found = true;
+            break;
+        }
+    }
+
+    if (!found)
+        goto end;
+
+    r = sd_bus_message_read_array(m, 'y', &value, &len);
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+
+
+    return false;
+
+end:
+    sd_bus_message_exit_container(m);
     return false;
 }
 
@@ -371,6 +550,8 @@ flower_power_sensor_open(struct sol_flow_node *node, void *data,
         context.client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");
         SOL_NULL_CHECK(context.client, -ENOMEM);
     }
+
+    flower->client = context.client;
 
     r = sol_ptr_vector_append(&context.flowers, flower);
     SOL_INT_CHECK(r, < 0, -ENOMEM);

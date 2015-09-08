@@ -1,3 +1,4 @@
 config FLOW_NODE_TYPE_BLUEZ
 	tristate "Node type: bluez"
+	depends on SOL_BUS
 	default m

@@ -2,11 +2,11 @@
  "$schema": "http://solettaproject.github.io/soletta/schemas/config.schema",
  "nodetypes": [
   {
-   "name": "Led",
+   "name": "Sensor",
    "options": {
     "address": "60:BE:B5:AC:27:00"
    },
-   "type": "bluez/flower-power-led"
+   "type": "bluez/flower-power-sensor"
   }
  ]
 }

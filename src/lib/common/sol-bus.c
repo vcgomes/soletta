@@ -267,7 +267,7 @@ fail:
  * connect to the bus. Any fail on getting connected to the bus means the
  * mainloop terminates.
  */
-sd_bus *
+SOL_API sd_bus *
 sol_bus_get(void (*bus_initialized)(sd_bus *bus))
 {
     int r;
@@ -324,7 +324,7 @@ destroy_client(struct sol_bus_client *client)
     sd_bus_unref(client->bus);
 }
 
-void
+SOL_API void
 sol_bus_close(void)
 {
     _ctx.exiting = true;
@@ -355,7 +355,7 @@ sol_bus_close(void)
     }
 }
 
-struct sol_bus_client *
+SOL_API struct sol_bus_client *
 sol_bus_client_new(sd_bus *bus, const char *service)
 {
     struct sol_bus_client *client;
@@ -384,16 +384,18 @@ fail:
     return NULL;
 }
 
-void
+SOL_API void
 sol_bus_client_free(struct sol_bus_client *client)
 {
     if (!client)
         return;
 
     destroy_client(client);
+
+    sol_ptr_vector_remove(&_ctx.clients, client);
 }
 
-const char *
+SOL_API const char *
 sol_bus_client_get_service(struct sol_bus_client *client)
 {
     SOL_NULL_CHECK(client, NULL);
@@ -401,7 +403,7 @@ sol_bus_client_get_service(struct sol_bus_client *client)
     return client->service;
 }
 
-sd_bus *
+SOL_API sd_bus *
 sol_bus_client_get_bus(struct sol_bus_client *client)
 {
     SOL_NULL_CHECK(client, NULL);
@@ -498,7 +500,7 @@ _getall_properties(sd_bus_message *reply, void *userdata,
     return _message_map_all_properties(reply, t, ret_error);
 }
 
-int
+SOL_API int
 sol_bus_map_cached_properties(struct sol_bus_client *client,
     const char *path, const char *iface,
     const struct sol_bus_properties property_table[],
@@ -580,7 +582,7 @@ fail:
     return r;
 }
 
-int
+SOL_API int
 sol_bus_unmap_cached_properties(struct sol_bus_client *client,
     const struct sol_bus_properties property_table[],
     const void *data)
@@ -752,7 +754,7 @@ end:
     return err;
 }
 
-int
+SOL_API int
 sol_bus_watch_interfaces(struct sol_bus_client *client,
     const struct sol_bus_interfaces interfaces[],
     const void *data)
@@ -808,7 +810,7 @@ error_message:
     return -EINVAL;
 }
 
-int
+SOL_API int
 sol_bus_remove_interfaces_watch(struct sol_bus_client *client,
     const struct sol_bus_interfaces interfaces[],
     const void *data)
@@ -839,7 +841,7 @@ add_name_owner_watch(struct sol_bus_client *client,
     return slot;
 }
 
-int
+SOL_API int
 sol_bus_client_set_connect_handler(struct sol_bus_client *client,
     void (*connect)(void *data, const char *unique),
     void *data)
@@ -858,7 +860,7 @@ sol_bus_client_set_connect_handler(struct sol_bus_client *client,
     return 0;
 }
 
-int
+SOL_API int
 sol_bus_client_set_disconnect_handler(struct sol_bus_client *client,
     void (*disconnect)(void *data),
     void *data)
@@ -877,7 +879,7 @@ sol_bus_client_set_disconnect_handler(struct sol_bus_client *client,
     return 0;
 }
 
-int
+SOL_API int
 sol_bus_log_callback(sd_bus_message *reply, void *userdata,
     sd_bus_error *ret_error)
 {

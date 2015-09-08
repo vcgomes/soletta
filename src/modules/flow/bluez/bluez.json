@@ -27,29 +27,9 @@
       },
       "out_ports": [
         {
-          "data_type": "int",
+          "data_type": "custom:PACKET_TYPE_FLOWER_POWER",
           "description": "FIXME",
-          "name": "LIGHT_SENSOR"
-        },
-        {
-          "data_type": "int",
-          "description": "FIXME",
-          "name": "SOIL_EC"
-        },
-        {
-          "data_type": "int",
-          "description": "FIXME",
-          "name": "SOIL_TEMP"
-        },
-        {
-          "data_type": "int",
-          "description": "FIXME",
-          "name": "AIR_TEMP"
-        },
-        {
-          "data_type": "int",
-          "description": "FIXME",
-          "name": "SOIL_VWC"
+          "name": "OUT"
         }
       ],
       "in_ports": [

@@ -1,4 +1,4 @@
 timer(timer:interval=1000)
-led(Led)
+sensor(Sensor)
 
-timer OUT -> IN toggle(boolean/toggle) OUT -> IN led
+timer OUT -> IN toggle(boolean/toggle) OUT -> IN sensor

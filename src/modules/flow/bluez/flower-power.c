@@ -90,6 +90,7 @@ struct flower_power_data {
     char *device;
     char *service;
     char *chr_path[CHAR_TYPE_SIZE];
+    struct sol_flow_node *node;
     struct sol_flower_power_data value;
 };
 
@@ -128,6 +129,8 @@ enum {
     BLUEZ_CHARACTERISTIC_UUID_PROPERTY,
     BLUEZ_CHARACTERISTIC_VALUE_PROPERTY,
 };
+
+#define LIVE_MEASURE_PERIOD 5
 
 static void bluez_device_appeared(void *data, const char *path);
 static void bluez_gatt_service_appeared(void *data, const char *path);
@@ -193,9 +196,13 @@ bluez_gatt_service_property_changed(void *data, const char *path, uint64_t mask)
 }
 
 static void
-bluez_characteristic_property_changed(void *data, const char *path, uint64_t mask)
+bluez_characteristic_property_changed(void *data, const char *path,
+    uint64_t mask)
 {
+    struct flower_power_data *f = data;
 
+    sol_flower_power_send_packet(f->node,
+        SOL_FLOW_NODE_TYPE_BLUEZ_FLOWER_POWER_SENSOR__OUT__OUT, &f->value);
 }
 
 static void
@@ -238,19 +245,6 @@ static void
 bluez_gatt_service_appeared(void *data, const char *path)
 {
 
-}
-
-static struct pending_device *
-find_pending_device_by_address(struct context *c, const char *address)
-{
-    struct pending_device *p;
-    uint16_t i;
-
-    SOL_VECTOR_FOREACH_IDX (&c->pending_devices, p, i) {
-        if (streq(p->remote, address))
-            return p;
-    }
-    return NULL;
 }
 
 static struct pending_device *
@@ -442,7 +436,6 @@ end:
     return false;
 }
 
-
 static bool
 bluez_characteristic_uuid_property_set(void *data, const char *path, sd_bus_message *m)
 {
@@ -490,11 +483,67 @@ static bool packet_set_value(struct sol_flower_power_data *packet,
         return false;
 
     d = (uint16_t) value[0] << 8 || value[1];
-    info = (double) (d * 3.3) / ((1 << 11) - 1)
+    info = (double) (d * 3.3) / ((1 << 11) - 1);
 
     switch (type) {
-        case CHAR_TYPE_LI
-    };
+    case CHAR_TYPE_LIGHT_SENSOR_VALUE:
+        packet->light.val = info;
+        return true;
+    case CHAR_TYPE_SOIL_EC:
+        /* FIXME: what does this represent? */
+        return false;
+    case CHAR_TYPE_SOIL_TEMP:
+        packet->temperature.val = info;
+        return true;
+    case CHAR_TYPE_AIR_TEMP:
+        return false;
+    case CHAR_TYPE_SOIL_VWC:
+        packet->water.val = info;
+        return true;
+    case CHAR_TYPE_LIVE_MEASURE_PERIOD:
+    case CHAR_TYPE_LED_STATE:
+    case CHAR_TYPE_SIZE:
+        return false;
+    }
+    return false;
+}
+
+static bool
+enable_characteristic_notification(struct sol_bus_client *client, const char *path)
+{
+    sd_bus_message *m;
+    int r;
+
+    r = sd_bus_message_new_method_call(sol_bus_client_get_bus(client), &m,
+        sol_bus_client_get_service(client), path,
+        "org.bluez.GattCharacteristic1", "StartNotify");
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_call_async(sol_bus_client_get_bus(client), NULL, m, NULL, NULL, 0);
+    SOL_INT_CHECK(r, < 0, false);
+
+    return true;
+}
+
+static bool
+write_live_measure_period(struct sol_bus_client *client, const char *path, uint8_t period)
+{
+    sd_bus_message *m;
+    int r;
+
+    r = sd_bus_message_new_method_call(sol_bus_client_get_bus(client), &m,
+        sol_bus_client_get_service(client), path,
+        "org.bluez.GattCharacteristic1",
+        "WriteValue");
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_message_append_array(m, 'y', &period, sizeof(period));
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_call_async(sol_bus_client_get_bus(client), NULL, m, NULL, NULL, 0);
+    SOL_INT_CHECK(r, < 0, false);
+
+    return true;
 }
 
 static bool
@@ -519,12 +568,19 @@ bluez_characteristic_value_property_set(void *data, const char *path, sd_bus_mes
     if (!found)
         goto end;
 
-    r = sd_bus_message_read_array(m, 'y', &value, &len);
+    r = sd_bus_message_read_array(m, 'y', (const void **) &value, &len);
     SOL_INT_CHECK_GOTO(r, < 0, end);
 
+    enable_characteristic_notification(f->client, path);
 
+    if (type == CHAR_TYPE_LIVE_MEASURE_PERIOD && len == 1 && value[0] != LIVE_MEASURE_PERIOD) {
+        write_live_measure_period(f->client, path, LIVE_MEASURE_PERIOD);
+    }
 
-    return false;
+    if (!packet_set_value(&f->value, type, value, len))
+        goto end;
+
+    return true;
 
 end:
     sd_bus_message_exit_container(m);
@@ -543,6 +599,7 @@ flower_power_sensor_open(struct sol_flow_node *node, void *data,
 
     flower->address = strdup(opts->address);
     flower->uuid = uuid;
+    flower->node = node;
 
     SOL_DBG("flower %p address %s", flower,  flower->address);
 
@@ -571,7 +628,18 @@ error_watch:
 static void
 flower_power_sensor_close(struct sol_flow_node *node, void *data)
 {
+    struct flower_power_data *flower = data;
+    int i;
 
+    free(flower->address);
+    free(flower->device);
+    free(flower->service);
+
+    for (i = 0; i < CHAR_TYPE_SIZE; i++) {
+        free(flower->chr_path[i]);
+    }
+
+    sol_bus_client_free(flower->client);
 }
 
 static int

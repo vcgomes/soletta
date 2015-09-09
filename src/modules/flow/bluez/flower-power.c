@@ -388,7 +388,7 @@ bluez_service_uuid_property_set(void *data, const char *path, sd_bus_message *m)
     SOL_INT_CHECK_GOTO(r, < 0, end);
 
     if (!streq(f->uuid, uuid))
-        return false;
+        goto end;
 
     f->service = strdup(path);
     SOL_NULL_CHECK_GOTO(f->service, end);
@@ -413,7 +413,7 @@ bluez_service_characteristics_property_set(void *data, const char *path, sd_bus_
         return false;
 
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ao");
-    SOL_INT_CHECK_GOTO(r, < 0, end);
+    SOL_INT_CHECK(r, < 0, false);
 
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "o");
     SOL_INT_CHECK_GOTO(r, < 0, end);
@@ -473,11 +473,6 @@ static bool packet_set_value(struct sol_flower_power_data *packet,
 {
     uint16_t d;
     double info;
-
-    if (type == CHAR_TYPE_SIZE ||
-        type == CHAR_TYPE_LED_STATE ||
-        type == CHAR_TYPE_LIVE_MEASURE_PERIOD)
-        return false;
 
     if (len < 2)
         return false;
@@ -571,11 +566,11 @@ bluez_characteristic_value_property_set(void *data, const char *path, sd_bus_mes
     r = sd_bus_message_read_array(m, 'y', (const void **) &value, &len);
     SOL_INT_CHECK_GOTO(r, < 0, end);
 
-    enable_characteristic_notification(f->client, path);
-
     if (type == CHAR_TYPE_LIVE_MEASURE_PERIOD && len == 1 && value[0] != LIVE_MEASURE_PERIOD) {
         write_live_measure_period(f->client, path, LIVE_MEASURE_PERIOD);
     }
+
+    enable_characteristic_notification(f->client, path);
 
     if (!packet_set_value(&f->value, type, value, len))
         goto end;

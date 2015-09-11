@@ -446,7 +446,7 @@ bluez_characteristic_uuid_property_set(void *data, const char *path, sd_bus_mess
     int r;
 
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
-    SOL_INT_CHECK_GOTO(r, < 0, error);
+    SOL_INT_CHECK(r, < 0, false);
 
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &uuid);
     SOL_INT_CHECK_GOTO(r, < 0, error);

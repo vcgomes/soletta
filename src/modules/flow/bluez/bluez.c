@@ -37,6 +37,7 @@
 #include <sys/stat.h>
 
 #include <systemd/sd-bus.h>
+#include <systemd/sd-bus-vtable.h>
 
 #include "sol-bus.h"
 #include "sol-flow.h"
@@ -44,443 +45,135 @@
 #include "sol-mainloop.h"
 #include "sol-types.h"
 #include "sol-util.h"
-#include "sol-vector.h"
 
 #include "bluez.h"
 
-#define BLUEZ_NAME_OWNER_MATCH "sender='org.freedesktop.DBus'," \
-	"type='signal',"                                            \
-	"interface='org.freedesktop.DBus',"                         \
-	"member='NameOwnerChanged',"                                \
-	"path='/org/freedesktop/DBus',"                             \
-	"arg0='org.bluez'"
+static struct agent {
+    struct sol_bus_client *client;
+    sd_bus_slot *register_slot;
+    sd_bus_slot *request_default_slot;
+} bluez_agent;
 
-#define BLUEZ_INTERFACES_ADDED_MATCH "sender='org.bluez',"  \
-	"type='signal',"                                        \
-	"interface='org.freedesktop.DBus',"                     \
-	"member='InterfacesAdded'"
+static sd_bus *agent_bus;
+struct sol_bus_client *bluez_client;
 
-#define BLUEZ_DEVICE_PROPERTIES_CHANGED_MATCH "sender='org.bluez'," \
-	"type='signal',"                                                \
-	"interface='org.freedesktop.DBus',"                             \
-	"member='PropertiesChanged',"                                   \
-    "arg0='org.bluez.Device1'"
+static int agent_release(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
 
-struct match {
-	char *address;
-	void (*cb)(const char *path, void *user_data);
-	void *user_data;
-	unsigned int id;
+static int agent_request_pincode(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+static int agent_display_pincode(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+static int agent_request_passkey(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+static int agent_display_passkey(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+static int agent_request_confirmation(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+static int agent_request_authorization(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+static int agent_authorize_service(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+static int agent_cancel(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+sd_bus_vtable agent_vtable[] = {
+    SD_BUS_VTABLE_START(0),
+    SD_BUS_METHOD("Release", NULL, NULL, agent_release,
+        SD_BUS_VTABLE_UNPRIVILEGED | SD_BUS_VTABLE_METHOD_NO_REPLY),
+    SD_BUS_METHOD("RequestPinCode", "o", "s", agent_request_pincode,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("DisplayPinCode", "os", NULL, agent_display_pincode,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestPasskey", "o", "u", agent_request_passkey,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("DisplayPasskey", "ouq", NULL, agent_display_passkey,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestConfirmation", "ou", NULL, agent_request_confirmation,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestAuthorization", "o", NULL, agent_request_authorization,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("AuthorizeService", "os", NULL, agent_authorize_service,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("Cancel", NULL, NULL, agent_cancel,
+        SD_BUS_VTABLE_UNPRIVILEGED)
 };
 
-struct service {
-    char *path;
-    char *uuid;
-};
-
-struct device {
-	char *address;
-	char *path;
-    struct sol_vector services;
-    sd_bus_slot *prop_changed;
-};
-
-static struct sol_vector matches = SOL_VECTOR_INIT(struct match);
-static struct sol_vector devices = SOL_VECTOR_INIT(struct device);
-
-static sd_bus *system_bus;
-static sd_bus_slot *name_owner_slot;
-static sd_bus_slot *managed_objects_slot;
-static sd_bus_slot *interfaces_added_slot;
-
-static bool track_bluez_devices(void);
-
-static int device_properties_changed(sd_bus_message *m, void *userdata,
-    sd_bus_error *ret_error);
-
-sd_bus *
-bluez_get_bus(void)
-{
-    if (system_bus)
-        return system_bus;
-
-    return system_bus = sol_bus_get(NULL);
-}
-
-static void
-match_free(struct match *m)
-{
-	free(m->address);
-}
-
-static void
-free_service(struct service *s)
-{
-    free(s->path);
-    free(s->uuid);
-}
-
-static void
-device_free(struct device *d)
-{
-    struct service *s;
-    unsigned int i;
-
-    SOL_VECTOR_FOREACH_IDX (&d->services, s, i) {
-        free_service(s);
-    }
-    sol_vector_clear(&d->services);
-
-	free(d->address);
-	free(d->path);
-}
-
-static struct match *
-find_match(const char *address)
-{
-	struct match *m;
-	unsigned int i;
-
-	SOL_VECTOR_FOREACH_IDX(&matches, m, i) {
-		if (streq(m->address, address))
-			return m;
-	}
-
-	return NULL;
-}
-
-static struct device *
-find_device(const char *address)
-{
-	struct device *d;
-	unsigned int i;
-
-	SOL_VECTOR_FOREACH_IDX(&devices, d, i) {
-		if (streq(d->address, address))
-			return d;
-	}
-
-	return NULL;
-}
-
-static void
-stop_tracking_bluez_devices(void)
-{
-	struct device *d;
-	unsigned int i;
-
-	name_owner_slot = sd_bus_slot_unref(name_owner_slot);
-	interfaces_added_slot = sd_bus_slot_unref(interfaces_added_slot);
-	managed_objects_slot = sd_bus_slot_unref(managed_objects_slot);
-
-	SOL_VECTOR_FOREACH_IDX (&devices, d, i) {
-		device_free(d);
-	}
-	sol_vector_clear(&devices);
-}
-
 static int
-name_owner_changed(sd_bus_message *m, void *userdata,
-    sd_bus_error *ret_error)
+register_agent_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
-    const char *name, *old, *new;
-
-	if (sd_bus_message_read(m, "sss", &name, &old, &new) < 0)
-		return 0;
-
-	if (!old || !strlen(old)) {
-		/* 'org.bluez' appeared. */
-		track_bluez_devices();
-		return 0;
-	}
-
-	if (!new || !strlen(new)) {
-		stop_tracking_bluez_devices();
-		return 0;
-	}
-
-	return 0;
-}
-
-static bool
-device_add_service(struct device *d, const char *path, const char *uuid)
-{
-    unsigned int i;
-    struct service *s;
-
-    SOL_NULL_CHECK(d, false);
-    SOL_NULL_CHECK(path, false);
-
-    SOL_VECTOR_FOREACH_IDX (&d->services, s, i) {
-        if (streq(s->path, path)) {
-            if (!s->uuid && uuid)
-                s->uuid = strdup(uuid);
-
-            return true;
-        }
-    }
-
-    s = sol_vector_append(&d->services);
-    SOL_NULL_CHECK(s, false);
-
-    s->uuid = uuid ? strdup(uuid) : NULL;
-    if (uuid && !s->uuid)
-        goto error;
-
-    s->path = strdup(path);
-    SOL_NULL_CHECK_GOTO(s->path, error);
-
-    return true;
-
-error:
-    free(s->path);
-    free(s->uuid);
-
-    sol_vector_del(&d->services, d->services.len - 1);
-
-    return false;
-}
-
-static void
-filter_device_properties(sd_bus_message *m, const char *path)
-{
-    if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sv}") < 0)
-        return;
-
-    do {
-        struct device *device;
-        struct match *match;
-        const char *property;
-        const char *value;
-
-        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sv") < 0)
-            break;
-
-        if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &property) < 0)
-            return;
-
-        if (streq(property, "Address")) {
-
-            if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s") < 0)
-                return;
-
-            if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &value) < 0)
-                return;
-
-            device = find_device(value);
-            if (!device) {
-                device = sol_vector_append(&devices);
-                if (!device) {
-                    SOL_WRN("Could not allocate 'device'");
-                    return;
-                }
-
-                device->address = strdup(value);
-                if (!device->address) {
-                    sol_vector_del(&devices, devices.len - 1);
-                    return;
-                }
-
-                device->path = strdup(path);
-                if (!device->path) {
-                    free(device->address);
-                    sol_vector_del(&devices, devices.len - 1);
-                    return;
-                }
-
-                if (sd_bus_add_match(bluez_get_bus(),
-                        &device->prop_changed,
-                        BLUEZ_DEVICE_PROPERTIES_CHANGED_MATCH,
-                        device_properties_changed, device) < 0)
-                    return;
-            }
-
-            match = find_match(value);
-            if (!match)
-                continue;
-
-            match->cb(path, match->user_data);
-        }
-
-        if (streq(property, "GattServices")) {
-            const char *service_path;
-
-            if (!device) {
-                SOL_DBG("Got 'GattServices' but no associated device");
-                continue;
-            }
-
-            if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ao") < 0)
-                continue;
-
-            if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "o") < 0)
-                continue;
-
-            while (sd_bus_message_read_basic(m, SD_BUS_TYPE_OBJECT_PATH,
-                    &service_path) > 0) {
-                device_add_service(device, service_path, NULL);
-            }
-        }
-
-    } while (1);
-}
-
-static int
-device_properties_changed(sd_bus_message *m, void *userdata,
-    sd_bus_error *ret_error)
-{
-    struct device *d = userdata;
-
-    if (ret_error)
-        return -EINVAL;
-
-    filter_device_properties(m, d->path);
-
-    return 0;
-}
-
-static void
-filter_interfaces(sd_bus_message *m)
-{
-	const char *path;
-
-	if (sd_bus_message_read(m, "o", &path) < 0)
-		return;
-
-	if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
-		return;
-
-	do {
-		const char *iface;
-
-		if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
-			break;
-
-		if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
-			return;
-
-		if (!streq(iface, BLUEZ_DEVICE_IFACE))
-			continue;
-
-        filter_device_properties(m, path);
-
-	} while (1);
-}
-
-static int
-interfaces_added(sd_bus_message *m, void *userdata,
-    sd_bus_error *ret_error)
-{
-	if (ret_error)
-		return -EINVAL;
-
-	filter_interfaces(m);
-
-	return 0;
-}
-
-static int
-managed_objects_reply(sd_bus_message *m, void *userdata,
-    sd_bus_error *ret_error)
-{
-    if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{oa{sa{sv}}}") < 0)
-        return -EINVAL;
-
-    while (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "oa{sa{sv}}") > 0) {
-        filter_interfaces(m);
-    }
-
-	return 0;
-}
-
-static bool
-track_bluez_devices(void)
-{
-	int r;
-
-	if (!name_owner_slot) {
-		r = sd_bus_add_match(bluez_get_bus(), &name_owner_slot, BLUEZ_NAME_OWNER_MATCH,
-            name_owner_changed, NULL);
-		SOL_INT_CHECK(r, < 0, false);
-	}
-
-	if (!interfaces_added_slot) {
-		r = sd_bus_add_match(bluez_get_bus(), &name_owner_slot, BLUEZ_INTERFACES_ADDED_MATCH,
-            interfaces_added, NULL);
-		SOL_INT_CHECK(r, < 0, false);
-	}
-
-	if (!managed_objects_slot) {
-		sd_bus_message *msg;
-		r = sd_bus_message_new_method_call(bluez_get_bus(), &msg,
-            "org.bluez",
-            "/",
-            "org.freedesktop.DBus.ObjectManager",
-            "GetManagedObjects");
-		SOL_INT_CHECK(r, < 0, false);
-
-		r = sd_bus_call_async(bluez_get_bus(), &managed_objects_slot, msg,
-            managed_objects_reply, NULL, 0);
-		SOL_INT_CHECK(r, < 0, false);
-	}
-
-	return true;
+    return -ENOSYS;
 }
 
 int
-bluez_match_device_by_address(const char* address,
-    void (*cb)(const char *path, void *user_data),
-    void *user_data)
+bluez_register_default_agent(void)
 {
-	static unsigned int id;
-	struct match *m;
-	struct device *d;
-	int r;
+    sd_bus_message *m;
+    int r;
 
-	if (find_match(address))
-		return 0;
+    if (!agent_bus) {
+        r = sd_bus_default(&agent_bus);
+        SOL_INT_CHECK(r, < 0, -ENOMEM);
+    }
 
-	m = sol_vector_append(&matches);
-	SOL_NULL_CHECK(m, 0);
+    r = sd_bus_add_object_vtable(agent_bus, &bluez_agent.register_slot,
+        "/soletta/agent1", "org.bluez.Agent1", agent_vtable, &bluez_agent);
 
-	m->address = strdup(address);
-	SOL_NULL_CHECK_GOTO(m->address, error);
+    bluez_client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");
+    SOL_NULL_CHECK_GOTO(bluez_client, error_client);
 
-	m->cb = cb;
-	m->user_data = user_data;
-	m->id = ++id;
+    bluez_agent.client = bluez_client;
 
-	d = find_device(address);
-	if (d) {
-		m->cb(d->path, user_data);
-	}
+    r = sd_bus_message_new_method_call(sol_bus_client_get_bus(bluez_agent.client), &m,
+        sol_bus_client_get_service(bluez_agent.client),
+        "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent");
+    SOL_INT_CHECK_GOTO(r, < 0, error_new_call);
 
-	/* The watches were already added */
-	if (matches.len > 1)
-		return m->id;
+    r = sd_bus_message_append(m, "os", "/soletta/agent1", "NoInputNoOutput");
+    SOL_INT_CHECK_GOTO(r, < 0, error_append);
 
-	r = track_bluez_devices();
-	SOL_INT_CHECK_GOTO(r, != 0, error);
+    r = sd_bus_call_async(sol_bus_client_get_bus(bluez_agent.client),
+        &bluez_agent.register_slot, m, register_agent_reply_cb, &bluez_agent, 0);
+    SOL_INT_CHECK_GOTO(r, < 0, error_call);
 
-	return m->id;
 
-error:
-	sol_vector_del(&matches, matches.len - 1);
-	return 0;
-}
 
-void bluez_remove_match(unsigned int id)
-{
-	struct match *m;
-	unsigned int i;
+    return 0;
 
-	SOL_VECTOR_FOREACH_REVERSE_IDX(&matches, m, i) {
-		if (m->id == id) {
-			match_free(m);
-			sol_vector_del(&matches, id);
-		}
-	}
+error_call:
+error_append:
+    sd_bus_message_unref(m);
 
-	if (matches.len == 0)
-		stop_tracking_bluez_devices();
+error_new_call:
+    sol_bus_client_free(bluez_agent.client);
+
+error_client:
+    sd_bus_slot_unref(bluez_agent.register_slot);
+
+    return -EINVAL;
 }

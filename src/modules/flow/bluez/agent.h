@@ -30,4 +30,13 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+struct bluez_device {
+    const char *address;
+    const char *path;
+};
+
 int bluez_register_default_agent(void);
+
+int bluez_start_simple_pair(void *(finish)(bool success, const struct bluez_device *device));
+
+void bluez_cancel_simple_pair(void);

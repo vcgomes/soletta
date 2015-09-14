@@ -44,6 +44,34 @@
       ],
       "private_data_type": "flower_power_data",
       "url": "http://solettaproject.org/doc/latest/node_types/bluez/flower-power-sensor.html"
+    },
+    {
+      "category": "input/hw",
+      "description": "Bluetooth Simple Pairer, pairs with the nearest device",
+      "methods": {
+        "close": "simple_pair_close",
+        "open": "simple_pair_open"
+      },
+      "name": "bluez/simple-pair",
+      "out_ports": [
+        {
+          "data_type": "string",
+          "description": "Address of the paired devices",
+          "name": "OUT"
+        }
+      ],
+      "in_ports": [
+        {
+          "data_type": "boolean",
+          "description": "While True keeps looking for the nearest device",
+          "name": "ENABLE",
+          "methods": {
+            "process": "simple_pair_enable_process"
+          }
+        }
+      ],
+      "private_data_type": "simple_pair_data",
+      "url": "http://solettaproject.org/doc/latest/node_types/bluez/bluez-simple-pair.html"
     }
   ]
 }

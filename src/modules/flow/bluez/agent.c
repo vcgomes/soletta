@@ -49,15 +49,6 @@
 
 #include "agent.h"
 
-#define PAIRING_TIMEOUT 5000
-#define CANCEL_TIMEOUT 30000
-
-enum {
-    DEVICE_FLAG_HAS_ADDRESS = (1 << 0),
-    DEVICE_FLAG_HAS_RSSI = (1 << 1),
-    DEVICE_FLAG_HAS_ALL = (DEVICE_FLAG_HAS_ADDRESS | DEVICE_FLAG_HAS_RSSI),
-};
-
 struct device {
     char *path;
     char *address;
@@ -75,7 +66,7 @@ static struct agent {
     sd_bus_slot *request_default_slot;
     sd_bus_slot *start_discovery_slot;
     sd_bus_slot *pair_slot;
-    void (*finish)(bool success, const struct bluez_device *device);
+    void (*finish)(void *data, bool success, const struct bluez_device *device);
     void *user_data;
     char *discovering_path;
     bool default_agent;
@@ -83,73 +74,13 @@ static struct agent {
     .nearest_id = UINT16_MAX,
 };
 
-static const int16_t rssi_threshold = -64;
+#define PAIRING_TIMEOUT 5000
+#define CANCEL_TIMEOUT 30000
 
-static int agent_release(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_request_pincode(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_display_pincode(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_request_passkey(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_display_passkey(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_request_confirmation(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_request_authorization(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_authorize_service(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-static int agent_cancel(sd_bus_message *m, void *userdata, sd_bus_error *error)
-{
-    return -ENOSYS;
-}
-
-sd_bus_vtable agent_vtable[] = {
-    SD_BUS_VTABLE_START(0),
-    SD_BUS_METHOD("Release", NULL, NULL, agent_release,
-        SD_BUS_VTABLE_UNPRIVILEGED | SD_BUS_VTABLE_METHOD_NO_REPLY),
-    SD_BUS_METHOD("RequestPinCode", "o", "s", agent_request_pincode,
-        SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("DisplayPinCode", "os", NULL, agent_display_pincode,
-        SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("RequestPasskey", "o", "u", agent_request_passkey,
-        SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("DisplayPasskey", "ouq", NULL, agent_display_passkey,
-        SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("RequestConfirmation", "ou", NULL, agent_request_confirmation,
-        SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("RequestAuthorization", "o", NULL, agent_request_authorization,
-        SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("AuthorizeService", "os", NULL, agent_authorize_service,
-        SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("Cancel", NULL, NULL, agent_cancel,
-        SD_BUS_VTABLE_UNPRIVILEGED)
+enum {
+    DEVICE_FLAG_HAS_ADDRESS = (1 << 0),
+    DEVICE_FLAG_HAS_RSSI = (1 << 1),
+    DEVICE_FLAG_HAS_ALL = (DEVICE_FLAG_HAS_ADDRESS | DEVICE_FLAG_HAS_RSSI),
 };
 
 enum {
@@ -165,6 +96,13 @@ enum {
 enum {
     BLUEZ_INTERFACE_ADAPTER,
     BLUEZ_INTERFACE_DEVICE,
+};
+
+static const int16_t rssi_threshold = -64;
+
+static const sd_bus_error error_rejected = {
+    .name = "org.bluez.Error.Rejected",
+    .message = "Not implemented",
 };
 
 static bool bluez_device_address_property_set(void *data, const char *path, sd_bus_message *m);
@@ -229,6 +167,88 @@ destroy_pairing(struct agent *agent)
 
     sol_bus_remove_interfaces_watch(agent->client, discovery_interfaces, agent);
 }
+
+static int agent_release(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return sd_bus_reply_method_return(m, NULL);
+}
+
+static int agent_request_pincode(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return sd_bus_reply_method_error(m, &error_rejected);
+}
+
+static int agent_display_pincode(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return sd_bus_reply_method_error(m, &error_rejected);
+}
+
+static int agent_request_passkey(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return sd_bus_reply_method_error(m, &error_rejected);
+}
+
+static int agent_display_passkey(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return sd_bus_reply_method_error(m, &error_rejected);
+}
+
+static int agent_request_confirmation(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return sd_bus_reply_method_error(m, &error_rejected);
+}
+
+static int agent_request_authorization(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    struct agent *agent = userdata;
+    struct device *nearest;
+    const char *path;
+    int r;
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_OBJECT_PATH, &path);
+    SOL_INT_CHECK_GOTO(r, < 0, rejected);
+
+    nearest = sol_ptr_vector_get(&agent->devices, agent->nearest_id);
+    SOL_NULL_CHECK_GOTO(nearest, rejected);
+
+    if (streq(nearest->path, path))
+        return sd_bus_reply_method_return(m, NULL);
+
+rejected:
+    return sd_bus_reply_method_error(m, &error_rejected);
+}
+
+static int agent_authorize_service(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return sd_bus_reply_method_error(m, &error_rejected);
+}
+
+static int agent_cancel(sd_bus_message *m, void *userdata, sd_bus_error *error)
+{
+    return -ENOSYS;
+}
+
+sd_bus_vtable agent_vtable[] = {
+    SD_BUS_VTABLE_START(0),
+    SD_BUS_METHOD("Release", NULL, NULL, agent_release,
+        SD_BUS_VTABLE_UNPRIVILEGED | SD_BUS_VTABLE_METHOD_NO_REPLY),
+    SD_BUS_METHOD("RequestPinCode", "o", "s", agent_request_pincode,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("DisplayPinCode", "os", NULL, agent_display_pincode,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestPasskey", "o", "u", agent_request_passkey,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("DisplayPasskey", "ouq", NULL, agent_display_passkey,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestConfirmation", "ou", NULL, agent_request_confirmation,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RequestAuthorization", "o", NULL, agent_request_authorization,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("AuthorizeService", "os", NULL, agent_authorize_service,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("Cancel", NULL, NULL, agent_cancel,
+        SD_BUS_VTABLE_UNPRIVILEGED)
+};
 
 static struct device *
 find_device(const struct agent *agent, const char *path)
@@ -336,11 +356,19 @@ default_agent_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_erro
     struct agent *agent = userdata;
 
     if (sol_bus_log_callback(m, userdata, ret_error))
-        return -EINVAL;
+        goto error;
 
     agent->default_agent = true;
 
-    return false;
+    return 0;
+
+error:
+    if (agent->finish) {
+        agent->finish(agent->user_data, false, NULL);
+    }
+    destroy_pairing(agent);
+
+    return -EINVAL;
 }
 
 static int
@@ -395,7 +423,21 @@ error_call:
 static int
 pair_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
-    return -ENOSYS;
+    struct agent *agent = userdata;
+    struct device *nearest = sol_ptr_vector_get(&agent->devices, agent->nearest_id);
+    struct bluez_device d;
+
+    SOL_NULL_CHECK(nearest, -EINVAL);
+
+    d.path = nearest->path;
+    d.address = nearest->address;
+
+    if (agent->finish)
+        agent->finish(agent->user_data, true, &d);
+
+    destroy_pairing(agent);
+
+    return sd_bus_reply_method_return(m, NULL);
 }
 
 static bool
@@ -499,12 +541,20 @@ start_discovery_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_er
     struct agent *agent = userdata;
 
     if (sol_bus_log_callback(m, userdata, ret_error))
-        return -EINVAL;
+        goto error;
 
     agent->discovering_path = strdup(sd_bus_message_get_path(m));
     SOL_NULL_CHECK(agent->discovering_path, -ENOMEM);
 
     return 0;
+
+error:
+    if (agent->finish) {
+        agent->finish(agent->user_data, false, NULL);
+    }
+    destroy_pairing(agent);
+
+    return -EINVAL;
 }
 
 static void bluez_adapter_interface_appeared(void *data, const char *path)
@@ -527,6 +577,9 @@ cancel_pairing_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_err
 
     sol_bus_log_callback(m, userdata, ret_error);
 
+    if (agent->finish) {
+        agent->finish(agent->user_data, false, NULL);
+    }
     destroy_pairing(agent);
 
     return 0;
@@ -553,7 +606,7 @@ cancel_pairing_cb(void *data)
 }
 
 int bluez_start_simple_pair(
-    void (*finish)(bool success, const struct bluez_device *device), void *user_data)
+    void (*finish)(void *data, bool success, const struct bluez_device *device), void *user_data)
 {
     int r;
 

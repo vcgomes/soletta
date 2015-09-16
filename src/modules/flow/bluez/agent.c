@@ -32,6 +32,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -48,12 +49,41 @@
 
 #include "agent.h"
 
+#define PAIRING_TIMEOUT 5000
+#define CANCEL_TIMEOUT 30000
+
+enum {
+    DEVICE_FLAG_HAS_ADDRESS = (1 << 0),
+    DEVICE_FLAG_HAS_RSSI = (1 << 1),
+    DEVICE_FLAG_HAS_ALL = (DEVICE_FLAG_HAS_ADDRESS | DEVICE_FLAG_HAS_RSSI),
+};
+
+struct device {
+    char *path;
+    char *address;
+    int rssi;
+    uint16_t flags;
+};
+
 static struct agent {
     struct sol_bus_client *client;
+    struct sol_ptr_vector devices;
+    struct sol_timeout *start_pairing;
+    struct sol_timeout *cancel_timeout;
+    uint16_t nearest_id;
     sd_bus_slot *register_slot;
     sd_bus_slot *request_default_slot;
+    sd_bus_slot *start_discovery_slot;
+    sd_bus_slot *pair_slot;
+    void (*finish)(bool success, const struct bluez_device *device);
+    void *user_data;
+    char *discovering_path;
     bool default_agent;
-} bluez_agent;
+} bluez_agent = {
+    .nearest_id = UINT16_MAX,
+};
+
+static const int16_t rssi_threshold = -64;
 
 static int agent_release(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
@@ -128,33 +158,25 @@ enum {
 
 enum {
     BLUEZ_DEVICE_ADDRESS_PROPERTY,
-    BLUEZ_DEVICE_UUIDS_PROPERTY,
     BLUEZ_DEVICE_RSSI_PROPERTY,
     BLUEZ_DEVICE_PAIRED_PROPERTY,
 };
 
-static void bluez_device_appeared(void *data, const char *path);
+enum {
+    BLUEZ_INTERFACE_ADAPTER,
+    BLUEZ_INTERFACE_DEVICE,
+};
+
 static bool bluez_device_address_property_set(void *data, const char *path, sd_bus_message *m);
-static bool bluez_device_uuids_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_device_rssi_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_device_paired_property_set(void *data, const char *path, sd_bus_message *m);
-
-static const struct sol_bus_interfaces bluez_interfaces[] = {
-    [BLUEZ_DEVICE_INTERFACE] = {
-        .name = "org.bluez.Device1",
-        .appeared = bluez_device_appeared,
-    },
-    { }
-};
+static void bluez_adapter_interface_appeared(void *data, const char *path);
+static void bluez_device_interface_appeared(void *data, const char *path);
 
 static const struct sol_bus_properties device_properties[] = {
     [BLUEZ_DEVICE_ADDRESS_PROPERTY] = {
         .member = "Address",
         .set = bluez_device_address_property_set,
-    },
-    [BLUEZ_DEVICE_UUIDS_PROPERTY] = {
-        .member = "UUIDs",
-        .set = bluez_device_uuids_property_set,
     },
     [BLUEZ_DEVICE_RSSI_PROPERTY] = {
         .member = "RSSI",
@@ -167,33 +189,144 @@ static const struct sol_bus_properties device_properties[] = {
     { }
 };
 
-static void
-bluez_device_appeared(void *data, const char *path)
-{
+struct sol_bus_interfaces discovery_interfaces[] = {
+    [BLUEZ_INTERFACE_ADAPTER] = {
+        .name = "org.bluez.Adapter1",
+        .appeared = bluez_adapter_interface_appeared,
+    },
+    [BLUEZ_INTERFACE_DEVICE] = {
+        .name = "org.bluez.Device1",
+        .appeared = bluez_device_interface_appeared,
+    },
+    { },
+};
 
+static void
+destroy_pairing(struct agent *agent)
+{
+    struct device *d;
+    uint16_t i;
+
+    if (agent->start_pairing) {
+        sol_timeout_del(agent->start_pairing);
+        agent->start_pairing = NULL;
+    }
+
+    if (agent->cancel_timeout) {
+        sol_timeout_del(agent->cancel_timeout);
+        agent->cancel_timeout = NULL;
+    }
+
+    agent->start_discovery_slot = sd_bus_slot_unref(agent->start_discovery_slot);
+    agent->pair_slot = sd_bus_slot_unref(agent->pair_slot);
+
+    SOL_PTR_VECTOR_FOREACH_IDX (&agent->devices, d, i) {
+        free(d->path);
+        free(d->address);
+        free(d);
+    }
+    sol_ptr_vector_clear(&agent->devices);
+
+    sol_bus_remove_interfaces_watch(agent->client, discovery_interfaces, agent);
+}
+
+static struct device *
+find_device(const struct agent *agent, const char *path)
+{
+    struct device *d;
+    uint16_t i;
+
+    SOL_PTR_VECTOR_FOREACH_IDX (&agent->devices, d, i) {
+        if (streq(d->path, path))
+            return d;
+    }
+
+    return NULL;
 }
 
 static bool
 bluez_device_address_property_set(void *data, const char *path, sd_bus_message *m)
 {
-    return false;
-}
+    struct agent *agent = data;
+    struct device *d;
+    const char *address;
+    int r;
 
-static bool
-bluez_device_uuids_property_set(void *data, const char *path, sd_bus_message *m)
-{
+    d = find_device(agent, path);
+    if (!d || d->address)
+        return false;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &address);
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    d->address = strdup(address);
+    SOL_NULL_CHECK_GOTO(d->address, error);
+
+    d->flags |= DEVICE_FLAG_HAS_ADDRESS;
+
+    return d->flags & DEVICE_FLAG_HAS_ALL;
+
+error:
+    sd_bus_message_exit_container(m);
+
     return false;
 }
 
 static bool
 bluez_device_rssi_property_set(void *data, const char *path, sd_bus_message *m)
 {
+    struct agent *agent = data;
+    struct device *d;
+    int16_t rssi;
+    int r;
+
+    d = find_device(agent, path);
+    if (!d)
+        return false;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "n");
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_INT16, &rssi);
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    d->rssi = rssi;
+    d->flags |= DEVICE_FLAG_HAS_RSSI;
+
+    return d->flags & DEVICE_FLAG_HAS_ALL;
+
+error:
+    sd_bus_message_exit_container(m);
+
     return false;
 }
 
 static bool
 bluez_device_paired_property_set(void *data, const char *path, sd_bus_message *m)
 {
+    struct agent *agent = data;
+    struct device *d;
+    bool paired;
+    int r;
+
+    d = find_device(agent, path);
+    if (!d)
+        return false;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "b");
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_BOOLEAN, &paired);
+    SOL_INT_CHECK_GOTO(r, < 0, error);
+
+    return !paired;
+
+error:
+    sd_bus_message_exit_container(m);
+
     return false;
 }
 
@@ -259,17 +392,189 @@ error_call:
     return -EINVAL;
 }
 
-int bluez_start_simple_pair(
-    void *(finish)(bool success, const struct bluez_device *device))
+static int
+pair_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
+    return -ENOSYS;
+}
+
+static bool
+start_pairing_cb(void *data)
+{
+    struct agent *agent = data;
+    struct sol_bus_client *client = agent->client;
+    struct device *nearest;
+    int r;
+
+    if (agent->pair_slot) {
+        SOL_WRN("Pairing already in progress.");
+        return false;
+    }
+
+    if (agent->nearest_id == UINT16_MAX)
+        return false;
+
+    nearest = sol_ptr_vector_get(&agent->devices, agent->nearest_id);
+
+    r = sd_bus_call_method_async(sol_bus_client_get_bus(client),
+        &agent->pair_slot, sol_bus_client_get_service(client),
+        nearest->path, "org.bluez.Device1", "Pair",
+        pair_reply_cb, agent, NULL);
+    SOL_INT_CHECK(r, < 0, false);
+
+    return false;
+}
+
+static void
+device_properties_changed(void *data, const char *path, uint64_t mask)
+{
+    struct agent *agent = data;
+    struct device *d, *nearest = NULL;
+    int16_t max_rssi = INT16_MIN;
+    uint16_t i, nearest_id = UINT16_MAX;
+
+    d = find_device(agent, path);
+    if (!d) {
+        SOL_WRN("Could not find device for path '%s'.\n", path);
+        return;
+    }
+
+    SOL_PTR_VECTOR_FOREACH_IDX (&agent->devices, d, i) {
+        if (max_rssi < d->rssi && d->rssi > rssi_threshold) {
+            nearest = d;
+            nearest_id = i;
+            max_rssi = d->rssi;
+        }
+    }
+
+    if (!nearest)
+        return;
+
+    if (nearest_id == agent->nearest_id)
+        return;
+
+    agent->nearest_id = nearest_id;
+
+    if (agent->start_pairing)
+        sol_timeout_del(agent->start_pairing);
+
+    agent->start_pairing = sol_timeout_add(PAIRING_TIMEOUT, start_pairing_cb, agent);
+    if (!agent->start_pairing)
+        agent->nearest_id = UINT16_MAX;
+}
+
+static void bluez_device_interface_appeared(void *data, const char *path)
+{
+    struct agent *agent = data;
+    struct device *d;
+    int r;
+
+    d = calloc(1, sizeof(struct device));
+    if (!d)
+        return;
+
+    d->path = strdup(path);
+    SOL_NULL_CHECK_GOTO(d->path, error_dup);
+
+    r = sol_bus_map_cached_properties(agent->client, path, "org.bluez.Device1",
+        device_properties, device_properties_changed, agent);
+    SOL_INT_CHECK_GOTO(r, < 0, error_map);
+
+    r = sol_ptr_vector_append(&agent->devices, d);
+    SOL_INT_CHECK_GOTO(r, < 0, error_append);
+
+    return;
+
+error_append:
+    sol_bus_unmap_cached_properties(agent->client, device_properties, agent);
+error_map:
+    free(d->path);
+error_dup:
+    free(d);
+}
+
+static int
+start_discovery_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    struct agent *agent = userdata;
+
+    if (sol_bus_log_callback(m, userdata, ret_error))
+        return -EINVAL;
+
+    agent->discovering_path = strdup(sd_bus_message_get_path(m));
+    SOL_NULL_CHECK(agent->discovering_path, -ENOMEM);
+
+    return 0;
+}
+
+static void bluez_adapter_interface_appeared(void *data, const char *path)
+{
+    struct agent *agent = data;
+
+    if (agent->discovering_path || agent->start_discovery_slot)
+        return;
+
+    sd_bus_call_method_async(sol_bus_client_get_bus(agent->client),
+        &agent->start_discovery_slot, sol_bus_client_get_service(agent->client),
+        path, "org.bluez.Adapter1", "StartDiscovery",
+        start_discovery_reply_cb, &bluez_agent, NULL);
+}
+
+static int
+cancel_pairing_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    struct agent *agent = userdata;
+
+    sol_bus_log_callback(m, userdata, ret_error);
+
+    destroy_pairing(agent);
+
+    return 0;
+}
+
+static bool
+cancel_pairing_cb(void *data)
+{
+    struct agent *agent = data;
+    struct sol_bus_client *client = agent->client;
+    struct device *nearest;
+
+    if (agent->nearest_id == UINT16_MAX)
+        return false;
+
+    nearest = sol_ptr_vector_get(&agent->devices, agent->nearest_id);
+
+    sd_bus_call_method_async(sol_bus_client_get_bus(client),
+        NULL, sol_bus_client_get_service(client),
+        nearest->path, "org.bluez.Device1", "CancelPairing",
+        cancel_pairing_reply_cb, agent, NULL);
+
+    return false;
+}
+
+int bluez_start_simple_pair(
+    void (*finish)(bool success, const struct bluez_device *device), void *user_data)
+{
+    int r;
+
     SOL_NULL_CHECK(bluez_agent.client, -EINVAL);
 
+    if (bluez_agent.finish)
+        return -EALREADY;
+
     if (!bluez_agent.default_agent) {
-        SOL_WRN("No default agent registered.");
+        SOL_WRN("No default agent registered");
         return -EINVAL;
     }
 
+    r = sol_bus_watch_interfaces(bluez_agent.client, discovery_interfaces, &bluez_agent);
+    SOL_INT_CHECK(r, < 0, -EINVAL);
 
+    bluez_agent.finish = finish;
+    bluez_agent.user_data = user_data;
+
+    bluez_agent.cancel_timeout = sol_timeout_add(CANCEL_TIMEOUT, cancel_pairing_cb, &bluez_agent);
+    SOL_NULL_CHECK(bluez_agent.cancel_timeout, -ENOMEM);
 
     return 0;
 }

@@ -1,0 +1,3 @@
+pair(Pair)
+
+True(constant/boolean:value=true) OUT -> ENABLE pair OUT -> IN _(console)

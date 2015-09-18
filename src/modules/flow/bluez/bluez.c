@@ -95,7 +95,8 @@ struct pending_device {
 };
 
 struct simple_pair_data {
-
+    struct sol_flow_node *node;
+    uint16_t port;
 };
 
 static struct context {
@@ -649,13 +650,26 @@ static int
 simple_pair_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
 {
-    return -ENOSYS;
+    return bluez_register_default_agent();
 }
 
 static void
 simple_pair_close(struct sol_flow_node *node, void *data)
 {
 
+}
+
+static void
+pair_finished_cb(void *data, bool success, const struct bluez_device *device)
+{
+    struct simple_pair_data *pair = data;
+
+    if (!success) {
+        sol_flow_send_error_packet(pair->node, EINVAL, "Could not pair with device");
+        return;
+    }
+
+    sol_flow_send_string_packet(pair->node, pair->port, device->address);
 }
 
 static int
@@ -665,7 +679,22 @@ simple_pair_enable_process(struct sol_flow_node *node,
     uint16_t conn_id,
     const struct sol_flow_packet *packet)
 {
-    return -ENOSYS;
+    struct simple_pair_data *pair = data;
+    bool enable;
+    int r;
+
+    pair->node = node;
+    pair->port = port;
+
+    r = sol_flow_packet_get_boolean(packet, &enable);
+    SOL_INT_CHECK(r, < 0, -EINVAL);
+
+    if (enable)
+        bluez_start_simple_pair(pair_finished_cb, pair);
+    else
+        bluez_cancel_simple_pair();
+
+    return 0;
 }
 
 #include "bluez-gen.c"

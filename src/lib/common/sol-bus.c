@@ -44,15 +44,14 @@
 #include "sol-util.h"
 #include "sol-vector.h"
 
-#define SERVICE_NAME_OWNER_MATCH "sender='org.freedesktop.DBus',"   \
-    "type='signal',"                                                \
+#define SERVICE_NAME_OWNER_MATCH "type='signal',"                   \
     "sender='org.freedesktop.DBus',"                                \
+    "path='/org/freedesktop/DBus',"                                 \
     "interface='org.freedesktop.DBus',"                             \
     "member='NameOwnerChanged',"                                    \
-    "path='/org/freedesktop/DBus',"                                 \
     "arg0='%s'"
 
-#define INTERFACES_ADDED_MATCH     "type='signal',"             \
+#define INTERFACES_ADDED_MATCH "type='signal',"                 \
     "sender='%s',"                                              \
     "interface='org.freedesktop.DBus.ObjectManager',"           \
     "member='InterfacesAdded'"
@@ -84,6 +83,7 @@ struct sol_bus_client {
     sd_bus_slot *managed_objects;
     sd_bus_slot *interfaces_added;
     sd_bus_slot *properties_changed;
+    sd_bus_slot *name_owner_slot;
     void (*connect)(void *data, const char *unique);
     void *connect_data;
     void (*disconnect)(void *data);
@@ -838,10 +838,36 @@ add_name_owner_watch(struct sol_bus_client *client,
     r = snprintf(matchstr, sizeof(matchstr), SERVICE_NAME_OWNER_MATCH, client->service);
     SOL_INT_CHECK(r, < 0, NULL);
 
+    SOL_DBG("match %s", matchstr);
+
     r = sd_bus_add_match(client->bus, &slot, matchstr, cb, userdata);
     SOL_INT_CHECK(r, < 0, NULL);
 
     return slot;
+}
+
+static int
+get_name_owner_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    struct sol_bus_client *client = userdata;
+    const char *unique;
+    int r;
+
+    client->name_owner_slot = sd_bus_slot_unref(client->name_owner_slot);
+
+    if (sd_bus_message_is_method_error(m, NULL)) {
+        const sd_bus_error *error = sd_bus_message_get_error(m);
+        SOL_DBG("Failed method call: %s: %s", error->name, error->message);
+        return 0;
+    }
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &unique);
+    SOL_INT_CHECK(r, < 0, -EINVAL);
+
+    if (client->connect)
+        client->connect(client->connect_data, unique);
+
+    return 0;
 }
 
 SOL_API int
@@ -859,6 +885,11 @@ sol_bus_client_set_connect_handler(struct sol_bus_client *client,
 
     client->name_changed = add_name_owner_watch(client, name_owner_changed, client);
     SOL_NULL_CHECK(client->name_changed, -ENOMEM);
+
+    sd_bus_call_method_async(sol_bus_client_get_bus(client),
+        &client->name_owner_slot, "org.freedesktop.DBus",
+        "/", "org.freedesktop.DBus", "GetNameOwner",
+        get_name_owner_reply_cb, client, "s", sol_bus_client_get_service(client));
 
     return 0;
 }

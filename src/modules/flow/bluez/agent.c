@@ -97,6 +97,10 @@ enum {
 };
 
 enum {
+    BLUEZ_ADAPTER_POWERED_PROPERTY,
+};
+
+enum {
     BLUEZ_INTERFACE_ADAPTER,
     BLUEZ_INTERFACE_DEVICE,
 };
@@ -112,6 +116,7 @@ static bool bluez_device_address_property_set(void *data, const char *path, sd_b
 static bool bluez_device_rssi_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_device_paired_property_set(void *data, const char *path, sd_bus_message *m);
 static void bluez_adapter_interface_appeared(void *data, const char *path);
+static bool bluez_adapter_powered_property_set(void *data, const char *path, sd_bus_message *m);
 static void bluez_device_interface_appeared(void *data, const char *path);
 
 static const struct sol_bus_properties device_properties[] = {
@@ -126,6 +131,14 @@ static const struct sol_bus_properties device_properties[] = {
     [BLUEZ_DEVICE_PAIRED_PROPERTY] = {
         .member = "Paired",
         .set = bluez_device_paired_property_set,
+    },
+    { }
+};
+
+static const struct sol_bus_properties adapter_properties[] = {
+    [BLUEZ_ADAPTER_POWERED_PROPERTY] = {
+        .member = "Powered",
+        .set = bluez_adapter_powered_property_set,
     },
     { }
 };
@@ -252,24 +265,25 @@ static int agent_cancel(sd_bus_message *m, void *userdata, sd_bus_error *error)
 
 static const sd_bus_vtable agent_vtable[] = {
     SD_BUS_VTABLE_START(0),
-    SD_BUS_METHOD("Release", NULL, NULL, agent_release,
+    SD_BUS_METHOD("Release", "", "", agent_release,
         SD_BUS_VTABLE_UNPRIVILEGED | SD_BUS_VTABLE_METHOD_NO_REPLY),
     SD_BUS_METHOD("RequestPinCode", "o", "s", agent_request_pincode,
         SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("DisplayPinCode", "os", NULL, agent_display_pincode,
+    SD_BUS_METHOD("DisplayPinCode", "os", "", agent_display_pincode,
         SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("RequestPasskey", "o", "u", agent_request_passkey,
         SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("DisplayPasskey", "ouq", NULL, agent_display_passkey,
+    SD_BUS_METHOD("DisplayPasskey", "ouq", "", agent_display_passkey,
         SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("RequestConfirmation", "ou", NULL, agent_request_confirmation,
+    SD_BUS_METHOD("RequestConfirmation", "ou", "", agent_request_confirmation,
         SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("RequestAuthorization", "o", NULL, agent_request_authorization,
+    SD_BUS_METHOD("RequestAuthorization", "o", "", agent_request_authorization,
         SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("AuthorizeService", "os", NULL, agent_authorize_service,
+    SD_BUS_METHOD("AuthorizeService", "os", "", agent_authorize_service,
         SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("Cancel", NULL, NULL, agent_cancel,
-        SD_BUS_VTABLE_UNPRIVILEGED)
+    SD_BUS_METHOD("Cancel", "", "", agent_cancel,
+        SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_VTABLE_END
 };
 
 static struct device *
@@ -425,32 +439,6 @@ error:
     return -EINVAL;
 }
 
-int
-bluez_register_default_agent(void)
-{
-    int r;
-
-    bluez_agent.client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");
-    SOL_NULL_CHECK(bluez_agent.client, -ENOMEM);
-
-    r = sd_bus_add_object_vtable(sol_bus_client_get_bus(bluez_agent.client),
-        &bluez_agent.register_slot,
-        "/soletta/agent1", "org.bluez.Agent1", agent_vtable, &bluez_agent);
-
-    r = sd_bus_call_method_async(sol_bus_client_get_bus(bluez_agent.client),
-        &bluez_agent.request_default_slot, sol_bus_client_get_service(bluez_agent.client),
-        "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent",
-        register_agent_reply_cb, &bluez_agent, "os", "/soletta/agent1", "NoInputNoOutput");
-    SOL_INT_CHECK_GOTO(r, < 0, error_call);
-
-    return 0;
-
-error_call:
-    sol_bus_client_free(bluez_agent.client);
-
-    return -EINVAL;
-}
-
 static int
 pair_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
@@ -601,21 +589,54 @@ error:
     return -EINVAL;
 }
 
-static void bluez_adapter_interface_appeared(void *data, const char *path)
+static void
+adapter_properties_changed(void *data, const char *path, uint64_t mask)
 {
     struct agent *agent = data;
-
-    if (agent->discovering_adapter)
-        return;
-
-    agent->discovering_adapter = strdup(path);
-    if (!agent->discovering_adapter)
-        return;
 
     sd_bus_call_method_async(sol_bus_client_get_bus(agent->client),
         &agent->start_discovery_slot, sol_bus_client_get_service(agent->client),
         path, "org.bluez.Adapter1", "StartDiscovery",
-        start_discovery_reply_cb, &bluez_agent, NULL);
+        start_discovery_reply_cb, agent, NULL);
+}
+
+static bool
+bluez_adapter_powered_property_set(void *data, const char *path, sd_bus_message *m)
+{
+    struct agent *agent = data;
+    bool powered;
+    int r;
+
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "b");
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_BOOLEAN, &powered);
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    if (!powered)
+        goto end;
+
+    if (agent->discovering_adapter)
+        goto end;
+
+    agent->discovering_adapter = strdup(path);
+
+    r = sd_bus_message_exit_container(m);
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    return true;
+
+end:
+    sd_bus_message_exit_container(m);
+    return false;
+}
+
+static void bluez_adapter_interface_appeared(void *data, const char *path)
+{
+    struct agent *agent = data;
+
+    sol_bus_map_cached_properties(agent->client, path, "org.bluez.Adapter1",
+        adapter_properties, adapter_properties_changed, agent);
 }
 
 static int
@@ -655,24 +676,67 @@ end:
     return false;
 }
 
-int bluez_start_simple_pair(
-    void (*finish)(void *data, bool success, const struct bluez_device *device), void *user_data)
+static void
+bluez_connected(void *data, const char *unique)
+{
+    struct agent *agent = data;
+    int r;
+
+    if (!agent->request_default_slot)
+        r = sd_bus_call_method_async(sol_bus_client_get_bus(agent->client),
+            &agent->request_default_slot, sol_bus_client_get_service(agent->client),
+            "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent",
+            register_agent_reply_cb, agent, "os", "/soletta/agent1", "NoInputNoOutput");
+
+    if (!agent->finish)
+        return;
+
+    r = sol_bus_watch_interfaces(agent->client, discovery_interfaces, agent);
+    if (!r)
+        return;
+
+    agent->cancel_timeout = sol_timeout_add(CANCEL_TIMEOUT, cancel_pairing_cb, agent);
+}
+
+int
+bluez_register_default_agent(void)
 {
     int r;
 
+    bluez_agent.client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");
+    SOL_NULL_CHECK(bluez_agent.client, -ENOMEM);
+
+    r = sd_bus_add_object_vtable(sol_bus_client_get_bus(bluez_agent.client),
+        &bluez_agent.register_slot,
+        "/soletta/agent1", "org.bluez.Agent1", agent_vtable, &bluez_agent);
+    SOL_INT_CHECK_GOTO(r, < 0, error_table);
+
+    if (sol_bus_client_set_connect_handler(bluez_agent.client,
+            bluez_connected, &bluez_agent) < 0)
+        return -EINVAL;
+
+    return 0;
+
+error_table:
+    sol_bus_client_free(bluez_agent.client);
+
+    return -EINVAL;
+}
+
+int bluez_start_simple_pair(
+    void (*finish)(void *data, bool success, const struct bluez_device *device), void *user_data)
+{
     SOL_NULL_CHECK(bluez_agent.client, -EINVAL);
 
     if (bluez_agent.finish)
         return -EALREADY;
 
-    r = sol_bus_watch_interfaces(bluez_agent.client, discovery_interfaces, &bluez_agent);
-    SOL_INT_CHECK(r, < 0, -EINVAL);
-
     bluez_agent.finish = finish;
     bluez_agent.user_data = user_data;
 
-    bluez_agent.cancel_timeout = sol_timeout_add(CANCEL_TIMEOUT, cancel_pairing_cb, &bluez_agent);
-    SOL_NULL_CHECK(bluez_agent.cancel_timeout, -ENOMEM);
+    if (sol_bus_client_set_connect_handler(bluez_agent.client,
+            bluez_connected, &bluez_agent) < 0)
+        return -EINVAL;
 
     return 0;
 }

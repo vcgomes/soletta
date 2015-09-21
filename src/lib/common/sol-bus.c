@@ -568,6 +568,8 @@ sol_bus_map_cached_properties(struct sol_bus_client *client,
         _getall_properties, t, 0);
     SOL_INT_CHECK_GOTO(r, < 0, fail_getall);
 
+    sd_bus_message_unref(m);
+
     return 0;
 
 fail_getall:
@@ -632,7 +634,7 @@ find_interface(const struct sol_bus_client *client, const char *iface)
 {
     const struct sol_bus_interfaces *s;
 
-    for (s = client->interfaces; s->name; s++) {
+    for (s = client->interfaces; s && s->name; s++) {
         if (streq(iface, s->name))
             return s;
     }
@@ -662,8 +664,6 @@ filter_device_properties(sd_bus_message *m, const char *iface, const char *path,
 
     t = find_property_table(client, iface, path);
     if (!t) {
-        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
-
         sd_bus_message_skip(m, "a{sv}");
         return false;
     }
@@ -684,16 +684,12 @@ filter_interfaces(struct sol_bus_client *client, sd_bus_message *m, sd_bus_error
     if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") < 0)
         return;
 
-    SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
-
     do {
         const struct sol_bus_interfaces *s;
         const char *iface;
 
         if (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") < 0)
             break;
-
-        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
 
         if (sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &iface) < 0)
             return;
@@ -702,11 +698,7 @@ filter_interfaces(struct sol_bus_client *client, sd_bus_message *m, sd_bus_error
         if (s && s->appeared)
             s->appeared((void *)client->interfaces_data, path);
 
-        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
-
         filter_device_properties(m, iface, path, client, ret_error);
-
-        SOL_DBG("sig %s", sd_bus_message_get_signature(m, false));
 
         if (sd_bus_message_exit_container(m) < 0)
             return;
@@ -718,8 +710,6 @@ static int
 interfaces_added_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
     struct sol_bus_client *client = userdata;
-
-    SOL_DBG("client %p sig %s", client, sd_bus_message_get_signature(m, false));
 
     if (sol_bus_log_callback(m, userdata, ret_error))
         return -EINVAL;
@@ -734,7 +724,6 @@ managed_objects_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
     struct sol_bus_client *client = userdata;
     int err;
-
 
     if (sol_bus_log_callback(m, userdata, ret_error)) {
         err = -EINVAL;

@@ -62,6 +62,7 @@ static struct agent {
     struct sol_ptr_vector devices;
     struct sol_timeout *start_pairing;
     struct sol_timeout *cancel_timeout;
+    char *discovering_adapter;
     uint16_t nearest_id;
     sd_bus_slot *register_slot;
     sd_bus_slot *request_default_slot;
@@ -146,6 +147,15 @@ destroy_pairing(struct agent *agent)
 {
     struct device *d;
     uint16_t i;
+
+    if (agent->discovering_adapter) {
+        sd_bus_call_method_async(sol_bus_client_get_bus(agent->client),
+            NULL, sol_bus_client_get_service(agent->client),
+            agent->discovering_adapter, "org.bluez.Adapter1", "StopDiscovery",
+            sol_bus_log_callback, NULL, NULL);
+        free(agent->discovering_adapter);
+        agent->discovering_adapter = NULL;
+    }
 
     if (agent->start_pairing) {
         sol_timeout_del(agent->start_pairing);
@@ -284,22 +294,20 @@ bluez_device_address_property_set(void *data, const char *path, sd_bus_message *
     const char *address;
     int r;
 
-    d = find_device(agent, path);
-    if (!d || d->address)
-        return false;
-
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s");
     SOL_INT_CHECK(r, < 0, false);
 
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_STRING, &address);
     SOL_INT_CHECK_GOTO(r, < 0, error);
 
+    d = find_device(agent, path);
+    if (!d || d->address)
+        goto error;
+
     d->address = strdup(address);
     SOL_NULL_CHECK_GOTO(d->address, error);
 
     d->flags |= DEVICE_FLAG_HAS_ADDRESS;
-
-    SOL_DBG("device %p address %s", d, d->address);
 
     sd_bus_message_exit_container(m);
 
@@ -319,20 +327,18 @@ bluez_device_rssi_property_set(void *data, const char *path, sd_bus_message *m)
     int16_t rssi;
     int r;
 
-    d = find_device(agent, path);
-    if (!d)
-        return false;
-
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "n");
     SOL_INT_CHECK_GOTO(r, < 0, error);
 
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_INT16, &rssi);
     SOL_INT_CHECK_GOTO(r, < 0, error);
 
+    d = find_device(agent, path);
+    if (!d)
+        goto error;
+
     d->rssi = rssi;
     d->flags |= DEVICE_FLAG_HAS_RSSI;
-
-    SOL_DBG("device %p address %s rssi %d", d, d->address, d->rssi);
 
     sd_bus_message_exit_container(m);
 
@@ -352,20 +358,18 @@ bluez_device_paired_property_set(void *data, const char *path, sd_bus_message *m
     bool paired;
     int r;
 
-    d = find_device(agent, path);
-    if (!d)
-        return false;
-
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "b");
     SOL_INT_CHECK_GOTO(r, < 0, error);
 
     r = sd_bus_message_read_basic(m, SD_BUS_TYPE_BOOLEAN, &paired);
     SOL_INT_CHECK_GOTO(r, < 0, error);
 
+    d = find_device(agent, path);
+    if (!d)
+        goto error;
+
     d->paired = paired;
     d->flags |= DEVICE_FLAG_HAS_PAIRED;
-
-    SOL_DBG("device %p address %s paired %d", d, d->address, d->paired);
 
     sd_bus_message_exit_container(m);
 
@@ -452,20 +456,24 @@ pair_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
 {
     struct agent *agent = userdata;
     struct device *nearest = sol_ptr_vector_get(&agent->devices, agent->nearest_id);
-    struct bluez_device d;
+    struct bluez_device d, *result = NULL;
 
     SOL_NULL_CHECK(nearest, -EINVAL);
 
-    SOL_DBG("nearest path %s addr %s", nearest->path, nearest->address);
-
-    if (sol_bus_log_callback(m, userdata, ret_error) < 0)
-        return -EINVAL;
+    if (sd_bus_message_is_method_error(m, NULL)) {
+        const sd_bus_error *error = sd_bus_message_get_error(m);
+        SOL_INF("Failed method call: %s: %s", error->name, error->message);
+        goto end;
+    }
 
     d.path = nearest->path;
     d.address = nearest->address;
 
+    result = &d;
+
+end:
     if (agent->finish)
-        agent->finish(agent->user_data, true, &d);
+        agent->finish(agent->user_data, !!result, result);
 
     destroy_pairing(agent);
 
@@ -515,8 +523,6 @@ device_properties_changed(void *data, const char *path, uint64_t mask)
         return;
     }
 
-    SOL_DBG("device addr %s", d->address);
-
     SOL_PTR_VECTOR_FOREACH_IDX (&agent->devices, d, i) {
         if ((d->flags & DEVICE_FLAG_HAS_ALL) != DEVICE_FLAG_HAS_ALL)
             continue;
@@ -525,8 +531,6 @@ device_properties_changed(void *data, const char *path, uint64_t mask)
             nearest = d;
             nearest_id = i;
             max_rssi = d->rssi;
-
-            SOL_DBG("nearest addr %s", nearest->address);
         }
     }
 
@@ -568,8 +572,6 @@ static void bluez_device_interface_appeared(void *data, const char *path)
     r = sol_ptr_vector_append(&agent->devices, d);
     SOL_INT_CHECK_GOTO(r, < 0, error_append);
 
-    SOL_DBG("new device %p path %s", d, d->path);
-
     return;
 
 error_append:
@@ -603,7 +605,11 @@ static void bluez_adapter_interface_appeared(void *data, const char *path)
 {
     struct agent *agent = data;
 
-    if (agent->start_discovery_slot)
+    if (agent->discovering_adapter)
+        return;
+
+    agent->discovering_adapter = strdup(path);
+    if (!agent->discovering_adapter)
         return;
 
     sd_bus_call_method_async(sol_bus_client_get_bus(agent->client),

@@ -97,6 +97,8 @@ struct pending_device {
 struct simple_pair_data {
     struct sol_flow_node *node;
     uint16_t port;
+    unsigned int timeout;
+    int threshold;
 };
 
 static struct context {
@@ -696,6 +698,13 @@ static int
 simple_pair_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
 {
+    struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
+        (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
+    struct simple_pair_data *pair = data;
+
+    pair->timeout = opts->timeout;
+    pair->threshold = opts->threshold;
+
     return bluez_register_default_agent();
 }
 
@@ -736,7 +745,7 @@ simple_pair_enable_process(struct sol_flow_node *node,
     SOL_INT_CHECK(r, < 0, -EINVAL);
 
     if (enable)
-        bluez_start_simple_pair(pair_finished_cb, pair);
+        bluez_start_simple_pair(pair->timeout, pair->threshold, pair_finished_cb, pair);
     else
         bluez_cancel_simple_pair();
 

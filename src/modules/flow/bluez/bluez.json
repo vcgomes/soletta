@@ -53,6 +53,16 @@
         "open": "simple_pair_open"
       },
       "name": "bluez/simple-pair",
+      "options": {
+        "members": [
+          {
+            "name": "timeout",
+            "data_type": "int",
+            "description": "How long to wait before trying to pair with the nearest device"
+          }
+        ],
+        "version": 1
+      },
       "out_ports": [
         {
           "data_type": "string",

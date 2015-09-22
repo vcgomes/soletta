@@ -64,6 +64,8 @@ static struct agent {
     struct sol_timeout *cancel_timeout;
     char *discovering_adapter;
     uint16_t nearest_id;
+    unsigned int timeout;
+    int threshold;
     sd_bus_slot *vtable_slot;
     sd_bus_slot *register_agent_slot;
     sd_bus_slot *request_default_slot;
@@ -737,6 +739,7 @@ error_table:
 
 int
 bluez_start_simple_pair(
+    unsigned int timeout, int threshold,
     void (*finish)(void *data, bool success, const struct bluez_device *device), void *user_data)
 {
     int r;
@@ -748,6 +751,8 @@ bluez_start_simple_pair(
 
     bluez_agent.finish = finish;
     bluez_agent.user_data = user_data;
+    bluez_agent.timeout = timeout;
+    bluez_agent.threshold = threshold;
 
     r = sol_bus_client_set_connect_handler(bluez_agent.client,
         bluez_connected, &bluez_agent);

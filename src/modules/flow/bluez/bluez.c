@@ -103,6 +103,7 @@ static struct context {
     struct sol_bus_client *client;
     struct sol_vector pending_devices; /* Devices without complete information */
     struct sol_ptr_vector flowers;
+    sd_bus_slot *pending_connect_slot;
 } context =  {
     .pending_devices = SOL_VECTOR_INIT(struct pending_device),
     .flowers = SOL_PTR_VECTOR_INIT,
@@ -116,6 +117,8 @@ enum {
 enum {
     BLUEZ_DEVICE_ADDRESS_PROPERTY,
     BLUEZ_DEVICE_GATT_SERVICES_PROPERTY,
+    BLUEZ_DEVICE_CONNECTED_PROPERTY,
+
 };
 
 enum {
@@ -133,8 +136,8 @@ enum {
 static void bluez_device_appeared(void *data, const char *path);
 static void bluez_gatt_service_appeared(void *data, const char *path);
 static bool bluez_device_address_property_set(void *data, const char *path, sd_bus_message *m);
-
 static bool bluez_device_gatt_services_property_set(void *data, const char *path, sd_bus_message *m);
+static bool bluez_device_connected_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_service_uuid_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_service_characteristics_property_set(void *data, const char *path, sd_bus_message *m);
 static bool bluez_characteristic_uuid_property_set(void *data, const char *path, sd_bus_message *m);
@@ -160,6 +163,10 @@ static const struct sol_bus_properties device_properties[] = {
     [BLUEZ_DEVICE_GATT_SERVICES_PROPERTY] = {
         .member = "GattServices",
         .set = bluez_device_gatt_services_property_set,
+    },
+    [BLUEZ_DEVICE_CONNECTED_PROPERTY] = {
+        .member = "Connected",
+        .set = bluez_device_connected_property_set,
     },
     { }
 };
@@ -188,6 +195,19 @@ static const struct sol_bus_properties characteristic_properties[] = {
     { }
 };
 
+static struct pending_device *
+find_pending_device_by_path(struct context *c, const char *path)
+{
+    struct pending_device *p;
+    uint16_t i;
+
+    SOL_VECTOR_FOREACH_IDX (&c->pending_devices, p, i) {
+        if (streq(p->path, path))
+            return p;
+    }
+    return NULL;
+}
+
 static void
 bluez_gatt_service_property_changed(void *data, const char *path, uint64_t mask)
 {
@@ -204,28 +224,89 @@ bluez_characteristic_property_changed(void *data, const char *path,
         SOL_FLOW_NODE_TYPE_BLUEZ_FLOWER_POWER_SENSOR__OUT__OUT, &f->value);
 }
 
+
+static bool
+write_live_measure_period(struct sol_bus_client *client, const char *path, uint8_t period)
+{
+    sd_bus_message *m;
+    int r;
+
+    r = sd_bus_message_new_method_call(sol_bus_client_get_bus(client), &m,
+        sol_bus_client_get_service(client), path,
+        "org.bluez.GattCharacteristic1",
+        "WriteValue");
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_message_append_array(m, 'y', &period, sizeof(period));
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_call_async(sol_bus_client_get_bus(client), NULL, m, NULL, NULL, 0);
+    SOL_INT_CHECK(r, < 0, false);
+
+    return true;
+}
+
+static bool
+enable_characteristic_notification(struct sol_bus_client *client, const char *path)
+{
+    sd_bus_message *m;
+    int r;
+
+    r = sd_bus_message_new_method_call(sol_bus_client_get_bus(client), &m,
+        sol_bus_client_get_service(client), path,
+        "org.bluez.GattCharacteristic1", "StartNotify");
+    SOL_INT_CHECK(r, < 0, false);
+
+    r = sd_bus_call_async(sol_bus_client_get_bus(client), NULL, m, NULL, NULL, 0);
+    SOL_INT_CHECK(r, < 0, false);
+
+    return true;
+}
+
+static int
+connect_reply_cb(sd_bus_message *m, void *userdata, sd_bus_error *ret_error)
+{
+    struct flower_power_data *f = userdata;
+    const char *path = f->chr_path[CHAR_TYPE_LIVE_MEASURE_PERIOD];
+
+    if (sol_bus_log_callback(m, userdata, ret_error))
+        return -EINVAL;
+
+    write_live_measure_period(f->client, path, LIVE_MEASURE_PERIOD);
+
+    enable_characteristic_notification(f->client, path);
+
+    return 0;
+}
+
 static void
 bluez_device_property_changed(void *data, const char *path, uint64_t mask)
 {
     struct context *c = data;
+    struct sol_bus_client *client = c->client;
     struct pending_device *p;
+    struct service *s;
     uint16_t i;
 
     if (!(mask & (1 << BLUEZ_DEVICE_GATT_SERVICES_PROPERTY)))
         return;
 
-    SOL_VECTOR_FOREACH_IDX (&c->pending_devices, p, i) {
-        struct service *s;
-        uint16_t j;
+    p = find_pending_device_by_path(c, path);
+    if (!p || p->flower)
+        return;
 
-        if (p->services.len == 0)
-            continue;
+    sd_bus_call_method_async(sol_bus_client_get_bus(client),
+        &c->pending_connect_slot, sol_bus_client_get_service(client),
+        path, "org.bluez.Device1", "Connect",
+        connect_reply_cb, p->flower, NULL);
 
-        SOL_VECTOR_FOREACH_IDX (&p->services, s, j) {
-            sol_bus_map_cached_properties(c->client, s->path,
-                "org.bluez.GattService1", service_properties,
-                bluez_gatt_service_property_changed, p);
-        }
+    if (p->services.len == 0)
+        return;
+
+    SOL_VECTOR_FOREACH_IDX (&p->services, s, i) {
+        sol_bus_map_cached_properties(client, s->path,
+            "org.bluez.GattService1", service_properties,
+            bluez_gatt_service_property_changed, p);
     }
 }
 
@@ -244,19 +325,6 @@ static void
 bluez_gatt_service_appeared(void *data, const char *path)
 {
 
-}
-
-static struct pending_device *
-find_pending_device_by_path(struct context *c, const char *path)
-{
-    struct pending_device *p;
-    uint16_t i;
-
-    SOL_VECTOR_FOREACH_IDX (&c->pending_devices, p, i) {
-        if (streq(p->path, path))
-            return p;
-    }
-    return NULL;
 }
 
 static struct flower_power_data *
@@ -337,16 +405,15 @@ bluez_device_gatt_services_property_set(void *data, const char *path, sd_bus_mes
     struct context *c = data;
     struct pending_device *p;
     int r;
-
-    p = find_pending_device_by_path(c, path);
-    if (!p)
-        goto end;
-
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ao");
     SOL_INT_CHECK_GOTO(r, < 0, end);
 
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "o");
     SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    p = find_pending_device_by_path(c, path);
+    if (!p)
+        goto end;
 
     while (sd_bus_message_read_basic(m, SD_BUS_TYPE_OBJECT_PATH, &path) >= 0) {
         struct service *s = sol_vector_append(&p->services);
@@ -364,6 +431,30 @@ bluez_device_gatt_services_property_set(void *data, const char *path, sd_bus_mes
 
     r = sd_bus_message_exit_container(m);
     SOL_INT_CHECK(r, < 0, false);
+
+    return true;
+
+end:
+    sd_bus_message_exit_container(m);
+    return false;
+}
+
+static bool
+bluez_device_connected_property_set(void *data, const char *path, sd_bus_message *m)
+{
+    struct context *c = data;
+    struct pending_device *p;
+    bool connected;
+    int r;
+    r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "b");
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    r = sd_bus_message_read_basic(m, SD_BUS_TYPE_BOOLEAN, &connected);
+    SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    p = find_pending_device_by_path(c, path);
+    if (!p)
+        goto end;
 
     return true;
 
@@ -407,15 +498,14 @@ bluez_service_characteristics_property_set(void *data, const char *path, sd_bus_
     struct flower_power_data *f = p->flower;
     const char *chr_path;
     int r;
-
-    if (!streq(f->service, path))
-        return false;
-
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ao");
     SOL_INT_CHECK(r, < 0, false);
 
     r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "o");
     SOL_INT_CHECK_GOTO(r, < 0, end);
+
+    if (!streq(f->service, path))
+        return false;
 
     while (sd_bus_message_read_basic(m, SD_BUS_TYPE_OBJECT_PATH, &chr_path) >= 0) {
         sol_bus_map_cached_properties(f->client, chr_path, "org.bluez.GattCharacteristic1",
@@ -503,44 +593,6 @@ static bool packet_set_value(struct sol_flower_power_data *packet,
 }
 
 static bool
-enable_characteristic_notification(struct sol_bus_client *client, const char *path)
-{
-    sd_bus_message *m;
-    int r;
-
-    r = sd_bus_message_new_method_call(sol_bus_client_get_bus(client), &m,
-        sol_bus_client_get_service(client), path,
-        "org.bluez.GattCharacteristic1", "StartNotify");
-    SOL_INT_CHECK(r, < 0, false);
-
-    r = sd_bus_call_async(sol_bus_client_get_bus(client), NULL, m, NULL, NULL, 0);
-    SOL_INT_CHECK(r, < 0, false);
-
-    return true;
-}
-
-static bool
-write_live_measure_period(struct sol_bus_client *client, const char *path, uint8_t period)
-{
-    sd_bus_message *m;
-    int r;
-
-    r = sd_bus_message_new_method_call(sol_bus_client_get_bus(client), &m,
-        sol_bus_client_get_service(client), path,
-        "org.bluez.GattCharacteristic1",
-        "WriteValue");
-    SOL_INT_CHECK(r, < 0, false);
-
-    r = sd_bus_message_append_array(m, 'y', &period, sizeof(period));
-    SOL_INT_CHECK(r, < 0, false);
-
-    r = sd_bus_call_async(sol_bus_client_get_bus(client), NULL, m, NULL, NULL, 0);
-    SOL_INT_CHECK(r, < 0, false);
-
-    return true;
-}
-
-static bool
 bluez_characteristic_value_property_set(void *data, const char *path, sd_bus_message *m)
 {
     struct flower_power_data *f = data;
@@ -564,12 +616,6 @@ bluez_characteristic_value_property_set(void *data, const char *path, sd_bus_mes
 
     r = sd_bus_message_read_array(m, 'y', (const void **) &value, &len);
     SOL_INT_CHECK_GOTO(r, < 0, end);
-
-    if (type == CHAR_TYPE_LIVE_MEASURE_PERIOD && len == 1 && value[0] != LIVE_MEASURE_PERIOD) {
-        write_live_measure_period(f->client, path, LIVE_MEASURE_PERIOD);
-    }
-
-    enable_characteristic_notification(f->client, path);
 
     if (!packet_set_value(&f->value, type, value, len))
         goto end;
@@ -656,7 +702,7 @@ simple_pair_open(struct sol_flow_node *node, void *data,
 static void
 simple_pair_close(struct sol_flow_node *node, void *data)
 {
-
+    bluez_remove_default_agent();
 }
 
 static void

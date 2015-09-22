@@ -64,7 +64,8 @@ static struct agent {
     struct sol_timeout *cancel_timeout;
     char *discovering_adapter;
     uint16_t nearest_id;
-    sd_bus_slot *register_slot;
+    sd_bus_slot *vtable_slot;
+    sd_bus_slot *register_agent_slot;
     sd_bus_slot *request_default_slot;
     sd_bus_slot *start_discovery_slot;
     sd_bus_slot *pair_slot;
@@ -665,6 +666,7 @@ cancel_pairing_cb(void *data)
         goto end;
 
     nearest = sol_ptr_vector_get(&agent->devices, agent->nearest_id);
+    SOL_NULL_CHECK_GOTO(nearest, end);
 
     sd_bus_call_method_async(sol_bus_client_get_bus(client),
         NULL, sol_bus_client_get_service(client),
@@ -682,20 +684,29 @@ bluez_connected(void *data, const char *unique)
     struct agent *agent = data;
     int r;
 
-    if (!agent->request_default_slot)
+    if (!agent->register_agent_slot) {
         r = sd_bus_call_method_async(sol_bus_client_get_bus(agent->client),
-            &agent->request_default_slot, sol_bus_client_get_service(agent->client),
+            &agent->register_agent_slot, sol_bus_client_get_service(agent->client),
             "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent",
             register_agent_reply_cb, agent, "os", "/soletta/agent1", "NoInputNoOutput");
+        SOL_INT_CHECK_GOTO(r, < 0, error_register);
+    }
 
     if (!agent->finish)
         return;
 
     r = sol_bus_watch_interfaces(agent->client, discovery_interfaces, agent);
-    if (!r)
-        return;
+    SOL_INT_CHECK_GOTO(r, < 0, error_watch);
 
     agent->cancel_timeout = sol_timeout_add(CANCEL_TIMEOUT, cancel_pairing_cb, agent);
+    SOL_NULL_CHECK_GOTO(agent->cancel_timeout, error_timeout);
+
+    return;
+error_timeout:
+    sol_bus_remove_interfaces_watch(agent->client, discovery_interfaces, agent);
+error_register:
+error_watch:
+    agent->register_agent_slot = sd_bus_slot_unref(agent->register_agent_slot);
 }
 
 int
@@ -707,25 +718,29 @@ bluez_register_default_agent(void)
     SOL_NULL_CHECK(bluez_agent.client, -ENOMEM);
 
     r = sd_bus_add_object_vtable(sol_bus_client_get_bus(bluez_agent.client),
-        &bluez_agent.register_slot,
+        &bluez_agent.vtable_slot,
         "/soletta/agent1", "org.bluez.Agent1", agent_vtable, &bluez_agent);
     SOL_INT_CHECK_GOTO(r, < 0, error_table);
 
-    if (sol_bus_client_set_connect_handler(bluez_agent.client,
-            bluez_connected, &bluez_agent) < 0)
-        return -EINVAL;
+    r = sol_bus_client_set_connect_handler(bluez_agent.client,
+        bluez_connected, &bluez_agent);
+    SOL_INT_CHECK_GOTO(r, < 0, error_connect);
 
     return 0;
 
+error_connect:
 error_table:
     sol_bus_client_free(bluez_agent.client);
 
     return -EINVAL;
 }
 
-int bluez_start_simple_pair(
+int
+bluez_start_simple_pair(
     void (*finish)(void *data, bool success, const struct bluez_device *device), void *user_data)
 {
+    int r;
+
     SOL_NULL_CHECK(bluez_agent.client, -EINVAL);
 
     if (bluez_agent.finish)
@@ -734,9 +749,22 @@ int bluez_start_simple_pair(
     bluez_agent.finish = finish;
     bluez_agent.user_data = user_data;
 
-    if (sol_bus_client_set_connect_handler(bluez_agent.client,
-            bluez_connected, &bluez_agent) < 0)
-        return -EINVAL;
+    r = sol_bus_client_set_connect_handler(bluez_agent.client,
+        bluez_connected, &bluez_agent);
+    SOL_INT_CHECK(r, < 0, -EINVAL);
 
     return 0;
+}
+
+void
+bluez_remove_default_agent(void)
+{
+    bluez_agent.vtable_slot = sd_bus_slot_unref(bluez_agent.vtable_slot);
+
+    destroy_pairing(&bluez_agent);
+
+    if (bluez_agent.client) {
+        sol_bus_client_free(bluez_agent.client);
+        bluez_agent.client = NULL;
+    }
 }

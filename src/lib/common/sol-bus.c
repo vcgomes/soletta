@@ -75,7 +75,7 @@ struct ctx {
 
 struct sol_bus_client {
     sd_bus *bus;
-    const char *service;
+    char *service;
     struct sol_ptr_vector property_tables;
     const struct sol_bus_interfaces *interfaces;
     const void *interfaces_data;
@@ -322,6 +322,7 @@ destroy_client(struct sol_bus_client *client)
     sd_bus_slot_unref(client->interfaces_added);
 
     sd_bus_unref(client->bus);
+    free(client->service);
 }
 
 SOL_API void
@@ -393,6 +394,8 @@ sol_bus_client_free(struct sol_bus_client *client)
     destroy_client(client);
 
     sol_ptr_vector_remove(&_ctx.clients, client);
+
+    free(client);
 }
 
 SOL_API const char *

@@ -37,6 +37,8 @@ struct bluez_device {
 
 int bluez_register_default_agent(void);
 
+void bluez_remove_default_agent(void);
+
 int bluez_start_simple_pair(
     void (*finish)(void *data, bool success, const struct bluez_device *device),
     void *user_data);

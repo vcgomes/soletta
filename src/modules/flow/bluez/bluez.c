@@ -698,12 +698,12 @@ static int
 simple_pair_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
 {
-    struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
-        (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
+    struct sol_flow_node_type_bluez_simple_pair_options *opts =
+        (struct sol_flow_node_type_bluez_simple_pair_options *) options;
     struct simple_pair_data *pair = data;
 
-    pair->timeout = opts->timeout;
-    pair->threshold = opts->threshold;
+    pair->timeout = opts->timeout.val;
+    pair->threshold = opts->threshold.val;
 
     return bluez_register_default_agent();
 }

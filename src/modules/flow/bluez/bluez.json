@@ -15,16 +15,6 @@
         "open": "flower_power_sensor_open"
       },
       "name": "bluez/flower-power-sensor",
-      "options": {
-        "members": [
-          {
-            "name": "address",
-            "data_type": "string",
-            "description": "Bluetooth Address"
-          }
-        ],
-        "version": 1
-      },
       "out_ports": [
         {
           "data_type": "custom:PACKET_TYPE_FLOWER_POWER",
@@ -33,6 +23,14 @@
         }
       ],
       "in_ports": [
+        {
+          "data_type": "string",
+          "description": "Bluetooth address of the Power Flower device",
+          "name": "ADDRESS",
+          "methods": {
+            "process": "flower_power_address_in_process"
+          }
+        },
         {
           "data_type": "boolean",
           "description": "FIXME",

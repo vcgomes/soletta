@@ -633,17 +633,7 @@ static int
 flower_power_sensor_open(struct sol_flow_node *node, void *data,
     const struct sol_flow_node_options *options)
 {
-    static const char *uuid = "39E1FA00-84A8-11E2-AFBA-0002A5D5C51B";
     struct flower_power_data *flower = data;
-    struct sol_flow_node_type_bluez_flower_power_sensor_options *opts =
-        (struct sol_flow_node_type_bluez_flower_power_sensor_options *) options;
-    int r;
-
-    flower->address = strdup(opts->address);
-    flower->uuid = uuid;
-    flower->node = node;
-
-    SOL_DBG("flower %p address %s", flower,  flower->address);
 
     if (!context.client) {
         context.client = sol_bus_client_new(sol_bus_get(NULL), "org.bluez");
@@ -652,19 +642,7 @@ flower_power_sensor_open(struct sol_flow_node *node, void *data,
 
     flower->client = context.client;
 
-    r = sol_ptr_vector_append(&context.flowers, flower);
-    SOL_INT_CHECK(r, < 0, -ENOMEM);
-
-    r = sol_bus_watch_interfaces(context.client, bluez_interfaces, &context);
-    SOL_INT_CHECK_GOTO(r, < 0, error_watch);
-
     return 0;
-
-error_watch:
-    sol_ptr_vector_del(&context.flowers,
-        sol_ptr_vector_get_len(&context.flowers) - 1);
-
-    return -EINVAL;
 }
 
 static void
@@ -692,6 +670,44 @@ flower_power_led_in_process(struct sol_flow_node *node,
     const struct sol_flow_packet *packet)
 {
     return -ENOSYS;
+}
+
+static int
+flower_power_address_in_process(struct sol_flow_node *node,
+    void *data,
+    uint16_t port,
+    uint16_t conn_id,
+    const struct sol_flow_packet *packet)
+{
+    static const char *uuid = "39E1FA00-84A8-11E2-AFBA-0002A5D5C51B";
+    struct flower_power_data *flower = data;
+    const char *addr;
+    int r;
+
+    r = sol_flow_packet_get_string(packet, &addr);
+    SOL_INT_CHECK(r, < 0, -EINVAL);
+
+    flower->address = strdup(addr);
+    SOL_NULL_CHECK(flower->address, -ENOMEM);
+
+    flower->uuid = uuid;
+    flower->node = node;
+
+    SOL_DBG("flower %p address %s", flower,  flower->address);
+
+    r = sol_ptr_vector_append(&context.flowers, flower);
+    SOL_INT_CHECK(r, < 0, -ENOMEM);
+
+    r = sol_bus_watch_interfaces(context.client, bluez_interfaces, &context);
+    SOL_INT_CHECK_GOTO(r, < 0, error_watch);
+
+    return 0;
+
+error_watch:
+    sol_ptr_vector_del(&context.flowers,
+        sol_ptr_vector_get_len(&context.flowers) - 1);
+
+    return -EINVAL;
 }
 
 static int

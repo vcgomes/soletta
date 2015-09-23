@@ -58,13 +58,13 @@
           {
             "name": "timeout",
             "data_type": "int",
-            "description": "How long to wait before trying to pair with the nearest device, in miliseconds.",
+            "description": "How long to wait before trying to pair with the nearest device, in miliseconds",
             "default": 30000
           },
           {
             "name": "threshold",
             "data_type": "int",
-            "description": "Only consider devices with RSSI above this value, in dBm.",
+            "description": "Only consider devices with RSSI above this value, in dBm",
             "default": -64
           }
         ],

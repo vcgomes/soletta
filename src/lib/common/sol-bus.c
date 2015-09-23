@@ -317,11 +317,11 @@ destroy_client(struct sol_bus_client *client)
     }
     sol_ptr_vector_clear(&client->property_tables);
 
-    sd_bus_slot_unref(client->name_changed);
-    sd_bus_slot_unref(client->managed_objects);
-    sd_bus_slot_unref(client->interfaces_added);
+    client->name_changed = sd_bus_slot_unref(client->name_changed);
+    client->managed_objects = sd_bus_slot_unref(client->managed_objects);
+    client->interfaces_added = sd_bus_slot_unref(client->interfaces_added);
 
-    sd_bus_unref(client->bus);
+    client->bus = sd_bus_unref(client->bus);
     free(client->service);
 }
 

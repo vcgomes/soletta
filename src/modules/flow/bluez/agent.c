@@ -761,6 +761,11 @@ bluez_start_simple_pair(
     return 0;
 }
 
+void bluez_cancel_simple_pair(void)
+{
+    destroy_pairing(&bluez_agent);
+}
+
 void
 bluez_remove_default_agent(void)
 {

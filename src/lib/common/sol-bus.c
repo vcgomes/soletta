@@ -889,6 +889,7 @@ sol_bus_client_set_connect_handler(struct sol_bus_client *client,
     client->name_changed = add_name_owner_watch(client, name_owner_changed, client);
     SOL_NULL_CHECK(client->name_changed, -ENOMEM);
 
+    /* In case the name is already present in the bus. */
     sd_bus_call_method_async(sol_bus_client_get_bus(client),
         &client->name_owner_slot, "org.freedesktop.DBus",
         "/", "org.freedesktop.DBus", "GetNameOwner",
